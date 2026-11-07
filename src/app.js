@@ -18,6 +18,7 @@ const P = {
   title: q.get("t") || "",
   bot: (q.get("bot") || "").replace(/^@/, ""),
   vs: q.get("vs") || "",
+  ref: q.get("ref") || "",
 };
 const RPC = q.get("rpc") || (P.net === "devnet" ? "https://api.devnet.solana.com" : "https://api.mainnet-beta.solana.com");
 const conn = new Connection(RPC, "confirmed");
@@ -50,7 +51,7 @@ function render() {
   $("net").className = "pill " + (P.net === "devnet" ? "dev" : "main");
   if (P.deadline) $("deadline").textContent = "Deadline " + new Date(P.deadline * 1000).toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   if (P.bot) { $("back").href = `https://t.me/${P.bot}`; }
-  if (!P.pid || !P.betId) return status("This link is incomplete. Ask the bot for a new one.", "bad");
+  if (!P.pid || !P.betId || !P.ref) return status("This link is incomplete. Ask the bot for a new one.", "bad");
   if (!provider()) {
     const here = encodeURIComponent(location.href);
     const ref = encodeURIComponent(location.origin);
@@ -76,7 +77,8 @@ async function connect() {
 async function preflight(pid, mint, units) {
   const bet = betAddress(pid, BigInt(P.betId));
   const info = await conn.getAccountInfo(bet);
-  const state = info && info.data.length >= 125 ? decodeBet(info.data) : null;
+  const state = info && info.data.length >= 157 ? decodeBet(info.data) : null;
+  if (state && state.resolver.toBase58() !== P.ref) throw new Error("This duel names a different referee than CALLIT. Don't join it.");
   if (P.action === "create" && state) throw new Error(state.creator.equals(me) ? "Your stake is already locked ✅" : "This duel id is already taken. Ask the bot for a new link.");
   if (P.action === "join") {
     if (!state) throw new Error("Your opponent hasn't locked their stake yet. Try again once they have.");
@@ -118,7 +120,7 @@ async function go() {
     status("Checking the duel…");
     const state = await preflight(pid, mint, units);
     let ix;
-    if (P.action === "create") ix = createIx(pid, me, BigInt(P.betId), units, P.deadline, P.opponent || null, mint);
+    if (P.action === "create") ix = createIx(pid, me, BigInt(P.betId), units, P.deadline, P.opponent || null, mint, P.ref);
     else if (P.action === "join") ix = joinIx(pid, me, BigInt(P.betId), mint);
     else if (P.action === "cancel") ix = cancelIx(pid, me, BigInt(P.betId), mint);
     else ix = concedeIx(pid, me, BigInt(P.betId), state.creator, state.opponent, mint);

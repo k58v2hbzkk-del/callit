@@ -33,12 +33,12 @@ export const ata = (owner, mint) => PublicKey.findProgramAddressSync([owner.toBy
 
 const m = (pubkey, isSigner, isWritable) => ({ pubkey, isSigner, isWritable });
 
-export function createIx(pid, creator, betId, amount, deadline, opponent, mint) {
+export function createIx(pid, creator, betId, amount, deadline, opponent, mint, resolver) {
   const bet = betAddress(pid, betId);
   const opp = opponent ? new PublicKey(opponent).toBytes() : new Uint8Array(32);
   const keys = [m(creator, true, true), m(bet, false, true), m(SystemProgram.programId, false, false)];
   if (mint) keys.push(m(mint, false, false), m(ata(creator, mint), false, true), m(vaultAddress(pid, bet), false, true), m(TOKEN, false, false));
-  const data = cat(Uint8Array.of(0), u64(betId), u64(amount), i64(deadline), opp);
+  const data = cat(Uint8Array.of(0), u64(betId), u64(amount), i64(deadline), opp, new PublicKey(resolver).toBytes());
   return new TransactionInstruction({ programId: pid, keys, data });
 }
 
@@ -71,6 +71,7 @@ export function decodeBet(data) {
   return {
     status: d[0], kind: d[1], betId: v.getBigUint64(4, true), amount: v.getBigUint64(12, true),
     deadline: Number(v.getBigInt64(20, true)), creator: pk(28), opponent: pk(60), mint: pk(92), winner: d[124],
+    resolver: pk(125),
   };
 }
 
