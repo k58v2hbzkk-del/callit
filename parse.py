@@ -115,7 +115,7 @@ def parse_when(txt: str, now: datetime, tz: str = "UTC") -> Optional[datetime]:
     s = re.sub(r"\s+", " ", txt.strip().lower().rstrip(".!?"))
     s = re.sub(r"^(?:the )?", "", s)
 
-    m = re.match(r"^in (\d+(?:\.\d+)?) ?(m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)$", s)
+    m = re.match(r"^(?:in|next|within|for)(?: the next)? (\d+(?:\.\d+)?) ?(m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)$", s)
     if m:
         n, unit = float(m.group(1)), m.group(2)[0]
         delta = {"m": timedelta(minutes=n), "h": timedelta(hours=n), "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
@@ -194,7 +194,7 @@ def parse_when(txt: str, now: datetime, tz: str = "UTC") -> Optional[datetime]:
 _DEADLINE_RE = re.compile(
     r"\s+(?:by|before|on|until|till|at|in)\s+(?P<when>.+)$", re.I)
 _BARE_DEADLINE_RE = re.compile(
-    r"\s+(?P<when>tonight|today|tomorrow|this weekend|end of (?:the )?(?:week|month|year)|next \w+)$", re.I)
+    r"\s+(?P<when>(?:next|within|in the next) \d+(?:\.\d+)? ?(?:m|min|mins|minutes?|h|hrs?|hours?|d|days?|w|weeks?)|tonight|today|tomorrow|this weekend|end of (?:the )?(?:week|month|year)|next \w+)$", re.I)
 
 
 def extract_deadline(text: str, now: datetime, tz: str) -> tuple[str, Optional[datetime]]:
@@ -203,6 +203,8 @@ def extract_deadline(text: str, now: datetime, tz: str) -> tuple[str, Optional[d
         tail = text[m.start():].strip()
         word, _, rest = tail.partition(" ")
         when_txt = rest if word.lower() != "in" else tail
+        if word.lower() == "in" and rest.lower().startswith("the next "):
+            when_txt = rest[4:]
         when = parse_when(when_txt, now, tz)
         mo = re.fullmatch(r"([a-z]{3})[a-z]*", rest.strip().lower())
         if when and word.lower() == "before" and mo and mo.group(1) in MONTHS:
