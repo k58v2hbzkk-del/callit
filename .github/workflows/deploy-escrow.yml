@@ -63,3 +63,4 @@ jobs:
           echo "### CALLIT escrow on devnet" >> "$GITHUB_STEP_SUMMARY"
           echo "Program: \`${{ steps.check.outputs.pid }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "https://solscan.io/account/${{ steps.check.outputs.pid }}?cluster=devnet" >> "$GITHUB_STEP_SUMMARY"
+# redeploy after faucet funding
