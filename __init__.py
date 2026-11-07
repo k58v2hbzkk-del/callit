@@ -20,41 +20,38 @@ TOOLSET = "callit"
 
 HELP = """🔮 CALLIT · bet your friends on anything
 
-Group call (everyone picks a side)
-  /callit SOL above 300 by Friday 6pm
+📣 Group call: everyone picks a side
+  /callit BTC above 120k by Friday 6pm
   /callit Arsenal beat Chelsea stake 5 USDC
-  /callit Davido drops an album before December judge @truth
-  /callit with 12   ·   /callit against 12   (closes early, no switching)
+  /callit <anything> by <when> judge @username
+  /callit with <id>  ·  /callit against <id>
 
-1v1 duel
-  /callit duel @truth I beat you in EA FC tonight stake ₦2000
-  /callit duel @ada BTC above 120k by Sunday stake 5 USDC
-  /callit accept 12 · decline 12
-  /callit won 12 · lost 12   (both claim the win → group votes)
+⚔️ 1v1 duel
+  /callit duel @username <your bet> stake ₦2000
+  /callit accept <id>  ·  /callit decline <id>
+  /callit won <id>  ·  /callit lost <id>
 
-Pool (closest guesses win, top 3 split the pot)
-  /callit pool BTC price by Friday 6pm stake 1 USDC
+🎯 Pool: closest 3 guesses win
+  /callit pool BTC price by Sunday stake 1 USDC
   /callit pool Arsenal vs Chelsea score
-  /callit pool how many goals Osimhen scores this month judge @ada
-  /callit guess 12 <answer>  ·  /callit result 12 <answer> (judge)
+  /callit guess <id> <answer>
 
-See the league
+📊 League
   /callit board · table · shame · me · debts
-  /callit show 12 · receipts 12
+  /callit show <id> · receipts <id>
 
-Settle
-  Prices and football settle themselves from live data.
-  Custom calls: /callit vote 12 yes|no (neutral votes count double)
-  /callit referee on   → I check results every 15 min and post them here
-  /callit settle       → check right now
+⚖️ Results
+  Prices and football settle automatically.
+  Other bets: the judge decides, or /callit vote <id> yes|no
+  /callit referee on  → auto-post results here
 
-Money (optional, you pay each other directly)
-  add 'stake 5 USDC' / 'stake ₦2000' / 'stake 0.1 SOL' to a call
+💸 Stakes (optional, paid directly between players)
+  Add "stake 5 USDC", "stake ₦2000" or "stake 0.1 SOL"
   /callit wallet <solana address>
-  /callit paid <debt#> <tx signature>   → verified on-chain
-  /callit received <debt#>              → for cash / bank transfers
+  /callit paid <debt id> <tx signature>
+  /callit received <debt id>
 
-New season: /callit season new [name]"""
+You can also just say it: "I bet BTC hits 120k by Sunday" """
 
 _CTX: Any = None
 
@@ -370,7 +367,7 @@ SCHEMAS = {
     "callit_duel": {
         "name": "callit_duel",
         "description": ("Challenge one specific person to a 1v1 bet for the person speaking. Use when someone dares or "
-                        "challenges a named friend ('I bet you @ada…', 'I beat you in FC tonight'). Same canonical prediction "
+                        "challenges a named friend ('I bet you @friend…', 'I beat you in FC tonight'). Same canonical prediction "
                         "format as callit_make_call; video-game and real-life bets work (players report won/lost)." + RELAY),
         "parameters": {"type": "object", "properties": {
             "opponent": {"type": "string", "description": "The challenged person's @username, without @"},
