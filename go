@@ -57,7 +57,7 @@ say "Installing CALLIT..."
 if ! hermes plugins list 2>/dev/null | grep -q callit; then
   hermes plugins install k58v2hbzkk-del/callit --enable --yes-deps
 else
-  hermes plugins update callit --yes >/dev/null 2>&1 || hermes plugins install k58v2hbzkk-del/callit --force --enable --yes-deps
+  hermes plugins update callit </dev/null >/dev/null 2>&1 || hermes plugins install k58v2hbzkk-del/callit --force --enable --yes-deps
 fi
 hermes plugins enable callit >/dev/null 2>&1 || true
 hermes config set plugins.entries.callit.settings.timezone "${CALLIT_TZ:-Africa/Lagos}" >/dev/null
