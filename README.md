@@ -83,14 +83,24 @@ You can also just talk. The agent gets five tools, so "I bet SOL flips 300 befor
 
 **Scoring:** a correct call earns 10 points plus 5 for each person on the losing side. The caller gets +5 when their own call hits, and streaks add up to +10 more. A wrong call costs 5 points.
 
-## Money (optional)
+## Money (optional, crypto only)
 
-Add `stake <amount> <currency>` to any call. Everyone who joins puts in the same amount. Losers' stakes are split between the winners, then netted into the fewest possible transfers.
+Stakes are **SOL, USDC or USDT on Solana**. Base and BNB are on the roadmap. Fiat stakes are refused.
 
-- **SOL, USDC and USDT on Solana:** the payer posts the transaction signature. CALLIT checks on-chain that the payer's saved wallet sent at least the owed amount to the winner's saved wallet before marking the debt paid ✅.
-- **₦ / $ / anything else:** the winner confirms with `/callit received`.
+**Duels use an on-chain escrow** (`escrow/`, a small Solana program):
+1. The challenger taps the bot's link and locks their stake from Phantom or Solflare (the stake page lives on the `gh-pages` branch).
+2. The opponent accepts in chat, then locks the same amount. Only now is the duel live.
+3. The result comes from a concession, the football API, the price feed, a judge or a group vote. CALLIT's referee key then tells the contract who won, and the contract pays them the whole pot. No fee.
 
-**CALLIT never holds anyone's money or keys.** Friends pay each other directly. It only reads public chain data to check a receipt. Leave the stake out to play for points and bragging rights. Real-money wagering is regulated in many places, so check your local rules.
+The contract can **only pay one of the two players**:
+- there is no admin withdraw and no third-party payout
+- if the referee disappears, anyone can refund both players 7 days after the deadline
+- a player can concede on-chain without the bot
+- payouts that fail are retried automatically
+
+**Group calls and pools** use a ledger: CALLIT nets who owes whom, and Solana payment receipts are checked on-chain (`/callit wallet`, `/callit paid`).
+
+**Run the escrow yourself:** `bash deploy` installs the Solana tools, makes a referee key, and builds and deploys the program to **devnet**. It then points the bot at the program. The program is **unaudited**, so get an audit before using real money on mainnet. Real-money wagering is regulated in many places, so check your local rules.
 
 ## Install
 
@@ -115,6 +125,8 @@ Settings (Desktop → Settings → Plugins → callit, or `plugins.entries.calli
   - `api.coingecko.com`: prices for price calls
   - `site.api.espn.com`: football fixtures and scores for match calls
   - the configured Solana RPC: only when someone runs `/callit paid`
+- **Escrow (only when configured):** the referee key is kept as the Hermes secret `CALLIT_RESOLVER_KEY`. It can sign one thing: telling the escrow contract which of the two players won. CALLIT reads bet accounts and sends those settle transactions to the configured Solana RPC.
+- **Chat safety:** `go.sh` limits the AI in Telegram and Discord to CALLIT's own tools (no shell, files or web), so strangers messaging a public bot can't reach the server.
 - **Storage:** `<HERMES_HOME>/plugin-data/callit/data.db` holds calls, sides, votes, points, debts, Solana *public* addresses and an audit log. There are no secrets and no private keys.
 - **Background work:** only when a user runs `/callit referee on`. That creates one visible Hermes cron job through `cronjob_manage`, which `/callit referee off` removes. No shell commands, no child processes, no reads outside plugin data.
 - **No telemetry.**

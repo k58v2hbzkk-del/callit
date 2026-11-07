@@ -16,10 +16,8 @@ WEEKDAY_SHORT = {d[:3]: i for i, d in enumerate(WEEKDAYS)}
 MONTHS = {m: i + 1 for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
 
-CURRENCIES = {
-    "usdc": "USDC", "usdt": "USDT", "sol": "SOL", "ngn": "NGN", "naira": "NGN", "₦": "NGN",
-    "$": "USD", "usd": "USD", "dollar": "USD", "dollars": "USD", "points": "PTS",
-}
+CURRENCIES = {"usdc": "USDC", "usdt": "USDT", "sol": "SOL", "points": "PTS"}
+FIAT = {"ngn", "naira", "₦", "$", "usd", "dollar", "dollars"}
 # Currencies CALLIT can verify on Solana when someone posts a payment receipt.
 ONCHAIN = {"SOL", "USDC", "USDT"}
 
@@ -68,7 +66,10 @@ def extract_stake(text: str) -> tuple[str, Optional[Stake]]:
     if not m:
         return text, None
     ccy = (m.group("pre") or m.group("ccy") or "").lower()
-    currency = CURRENCIES.get(ccy, "USD" if not ccy else ccy.upper())
+    if not ccy or ccy in FIAT:
+        currency = "FIAT"   # rejected in parse_call: CALLIT stakes are crypto only
+    else:
+        currency = CURRENCIES.get(ccy, ccy.upper())
     stake = Stake(_num(m.group("amt"), m.group("k") or ""), currency)
     return (text[: m.start()] + text[m.end():]).strip(" ,.;"), stake
 
@@ -237,6 +238,9 @@ _DRAW_RE = re.compile(
 _WIN_RE = re.compile(r"^(?P<a>[\w .'&-]+?)\s+(?:will\s+|to\s+)?(?:win|wins)\s+(?:vs\.?|v|against)\s+(?P<b>[\w .'&-]+?)$", re.I)
 
 
+PRONOUNS = {"i", "you", "me", "u", "him", "her", "them", "we", "us", "my", "your", "he", "she", "they"}
+
+
 def classify(text: str) -> tuple[str, dict]:
     t = text.strip()
     m = _PRICE_RE.match(t)
@@ -258,6 +262,9 @@ def classify(text: str) -> tuple[str, dict]:
         m = rx.match(t)
         if m:
             a, b = m.group("a").strip(), m.group("b").strip()
+            words = {w.lower() for w in (a + " " + b).split()}
+            if words & PRONOUNS or re.search(r"\b(in|at|on)\s+(ea|fc|fifa|cod|pubg|chess|ludo|whot|scrabble|2k|game)\b", b, re.I):
+                break   # "I beat you in EA FC" is a game duel between people, not a football fixture
             if a and b and a.lower() != b.lower():
                 return "match", {"team_a": a, "team_b": b, "pick": pick}
     return "custom", {}
@@ -273,6 +280,8 @@ def parse_call(raw: str, now: datetime, tz: str = "UTC") -> ParsedCall:
     pc = ParsedCall(text=text, kind=kind, spec=spec, deadline=deadline, stake=stake, judge=judge)
     if not text:
         pc.errors.append("empty prediction")
+    if stake and stake.currency == "FIAT":
+        pc.errors.append("stakes are crypto only. Use SOL, USDC or USDT, e.g. 'stake 0.1 SOL' or 'stake 5 USDC'")
     if stake and stake.amount <= 0:
         pc.errors.append("stake must be more than zero")
     if deadline and deadline <= now:

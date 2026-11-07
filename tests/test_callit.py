@@ -217,7 +217,7 @@ def test_command_router(cl, monkeypatch):
 
 def test_duel_game_bet_concede_and_money(cl):
     eng, _ = cl
-    r = eng.make_call("tg:g1", A("Taj"), "I beat you in EA FC tonight stake 2000 naira", now=T0, mode="duel", opponent="@truth")
+    r = eng.make_call("tg:g1", A("Taj"), "I beat you in EA FC tonight stake 20 USDC", now=T0, mode="duel", opponent="@truth")
     assert r["ok"], r
     cid = r["call_id"]
     assert "DUEL" in r["message"] and "@truth" in r["message"]
@@ -227,7 +227,7 @@ def test_duel_game_bet_concede_and_money(cl):
     assert "DUEL ON" in eng.accept("tg:g1", cid, A("Truth"), now=T0 + timedelta(minutes=5))["message"]
     # Truth concedes -> Taj wins, ₦2000 debt
     res = eng.report("tg:g1", cid, A("Truth"), "lost", now=T0 + timedelta(hours=3))
-    assert "CALLED IT" in res["message"] and "₦2,000" in res["message"]
+    assert "CALLED IT" in res["message"] and "20 USDC" in res["message"]
 
 
 def test_duel_dispute_goes_to_vote(cl):
@@ -298,3 +298,98 @@ def test_any_bet_defaults_deadline(cl):
     assert r["ok"], r
     r = eng.make_call("tg:g1", A("Taj"), "Truth will be late to class", now=T0)
     assert r["ok"] and "24 hours" in r["message"]
+
+
+class FakeChain:
+    """Stands in for solana.Escrow: holds bet states, records payouts, can fail on demand."""
+    cluster, program = "devnet", "9fhzt61u3YzUWYRY66E3ArvJVS2We8jvaHVuSLuUdT9Q"
+
+    def __init__(self):
+        self.bets, self.paid, self.fail = {}, [], False
+
+    def get_bet(self, bet_id):
+        return self.bets.get(bet_id)
+
+    def settle(self, bet_id, outcome):
+        if self.fail:
+            raise RuntimeError("rpc down")
+        self.paid.append((bet_id, outcome))
+        self.bets[bet_id] = {**self.bets[bet_id], "status": "done"}
+        return f"sig{len(self.paid)}"
+
+    def explorer(self, sig):
+        return f"https://solscan.io/tx/{sig}?cluster=devnet"
+
+
+def _settings(chain):
+    eng = importlib.import_module(f"{PKG}.engine")
+    return eng.Settings(escrow=chain, bot_username="CallitHQBot")
+
+
+def test_fiat_stakes_rejected(cl):
+    eng, _ = cl
+    r = eng.make_call("tg:g1", A("Taj"), "Arsenal win the league by May stake ₦2000", now=T0)
+    assert not r["ok"] and "crypto only" in r["message"]
+    r = eng.make_call("tg:g1", A("Taj"), "rain tomorrow stake $5", now=T0)
+    assert not r["ok"]
+
+
+def test_escrow_duel_full_flow(cl):
+    eng, _ = cl
+    ch = FakeChain()
+    S = _settings(ch)
+    r = eng.make_call("tg:g1", A("Taj"), "I beat you in EA FC tonight stake 0.1 SOL", settings=S, now=T0, mode="duel", opponent="truth")
+    assert r["ok"] and "escrow" in r["message"] and "a=create" in r["message"] and "k58v2hbzkk-del.github.io" in r["message"]
+    cid = r["call_id"]
+    bid = eng.get_call(cid)["spec"]["escrow"]["bet_id"]
+    # nothing happens until the challenger deposits
+    assert eng.referee("tg:g1", settings=S, now=T0 + timedelta(minutes=1)) == []
+    ch.bets[bid] = {"status": "open", "creator": "WalletTaj", "opponent": "1" * 32}
+    assert "stake is locked" in eng.referee("tg:g1", settings=S, now=T0 + timedelta(minutes=2))[0]
+    # can't report before both stakes are in
+    acc = eng.accept("tg:g1", cid, A("Truth"), settings=S, now=T0 + timedelta(minutes=3))
+    assert "a=join" in acc["message"]
+    assert not eng.report("tg:g1", cid, A("Truth"), "lost", settings=S, now=T0 + timedelta(minutes=4))["ok"]
+    ch.bets[bid] = {"status": "active", "creator": "WalletTaj", "opponent": "WalletTruth"}
+    assert "IS LIVE" in "\n".join(eng.referee("tg:g1", settings=S, now=T0 + timedelta(minutes=5)))
+    res = eng.report("tg:g1", cid, A("Truth"), "lost", settings=S, now=T0 + timedelta(hours=2))
+    assert "Paid 0.2 SOL to Taj on-chain" in res["message"] and ch.paid == [(bid, 0)]
+    assert "owes" not in eng.view_debts("tg:g1") and "#1:" not in res["message"]   # no IOUs for escrowed duels
+
+
+def test_escrow_payout_retries(cl):
+    eng, _ = cl
+    ch = FakeChain()
+    S = _settings(ch)
+    cid = eng.make_call("tg:g1", A("Taj"), "I win at COD by tonight stake 5 USDC", settings=S, now=T0, mode="duel", opponent="truth")["call_id"]
+    bid = eng.get_call(cid)["spec"]["escrow"]["bet_id"]
+    ch.bets[bid] = {"status": "open", "creator": "W1", "opponent": "1" * 32}
+    eng.referee("tg:g1", settings=S, now=T0)
+    eng.accept("tg:g1", cid, A("Truth"), settings=S, now=T0)
+    ch.bets[bid] = {"status": "active", "creator": "W1", "opponent": "W2"}
+    eng.referee("tg:g1", settings=S, now=T0)
+    ch.fail = True
+    res = eng.report("tg:g1", cid, A("Taj"), "lost", settings=S, now=T0 + timedelta(hours=1))
+    assert "queued" in res["message"]
+    ch.fail = False
+    out = eng.referee("tg:g1", settings=S, now=T0 + timedelta(hours=1, minutes=15))
+    assert any("went through" in m for m in out) and ch.paid == [(bid, 1)]
+
+
+def test_escrow_refunds(cl):
+    eng, _ = cl
+    ch = FakeChain()
+    S = _settings(ch)
+    # challenger locks, opponent never accepts -> refund at lock time
+    cid = eng.make_call("tg:g1", A("Taj"), "Burna drops a single by Friday stake 0.1 SOL", settings=S, now=T0, mode="duel", opponent="truth")["call_id"]
+    bid = eng.get_call(cid)["spec"]["escrow"]["bet_id"]
+    ch.bets[bid] = {"status": "open", "creator": "W1", "opponent": "1" * 32}
+    eng.referee("tg:g1", settings=S, now=T0)
+    lock = eng.dt(eng.get_call(cid)["lock_at"])
+    out = "\n".join(eng.referee("tg:g1", settings=S, now=lock + timedelta(minutes=1)))
+    assert "refunded on-chain" in out and ch.paid == [(bid, 2)]
+    # nobody deposited at all -> void, nothing to pay
+    cid = eng.make_call("tg:g1", A("Taj"), "rain tomorrow stake 0.1 SOL", settings=S, now=T0, mode="duel", opponent="truth")["call_id"]
+    lock = eng.dt(eng.get_call(cid)["lock_at"])
+    out = "\n".join(eng.referee("tg:g1", settings=S, now=lock + timedelta(minutes=1)))
+    assert "void" in out and len(ch.paid) == 1

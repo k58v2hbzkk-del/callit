@@ -711,6 +711,7 @@ dependencies = [
 name = "callit_escrow"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "solana-program",
  "solana-program-test",
  "solana-sdk",

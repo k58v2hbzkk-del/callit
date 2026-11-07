@@ -27,7 +27,7 @@ HELP = """🔮 CALLIT · bet your friends on anything
   /callit with <id>  ·  /callit against <id>
 
 ⚔️ 1v1 duel
-  /callit duel @username <your bet> stake ₦2000
+  /callit duel @username <your bet> stake 0.1 SOL
   /callit accept <id>  ·  /callit decline <id>
   /callit won <id>  ·  /callit lost <id>
 
@@ -45,11 +45,10 @@ HELP = """🔮 CALLIT · bet your friends on anything
   Other bets: the judge decides, or /callit vote <id> yes|no
   /callit referee on  → auto-post results here
 
-💸 Stakes (optional, paid directly between players)
-  Add "stake 5 USDC", "stake ₦2000" or "stake 0.1 SOL"
-  /callit wallet <solana address>
-  /callit paid <debt id> <tx signature>
-  /callit received <debt id>
+💸 Stakes (crypto: SOL, USDC, USDT on Solana)
+  Add "stake 0.1 SOL" or "stake 5 USDC" to a bet
+  Duels: both stakes lock in the escrow contract, winner paid automatically
+  Group calls & pools: /callit wallet <address> · paid <debt id> <tx>
 
 You can also just say it: "I bet BTC hits 120k by Sunday" """
 
@@ -97,13 +96,45 @@ def _cfg(key: str, default: Any) -> Any:
         return default
 
 
+def _secret(name: str) -> str:
+    try:
+        from agent.secret_scope import get_secret
+        return get_secret(name) or ""
+    except Exception:
+        return ""
+
+
+_ESCROW: dict = {}
+
+
+def _escrow():
+    """The duel escrow client, when a program id and referee key are configured."""
+    program = str(_cfg("escrow_program", "") or "").strip()
+    key = _secret("CALLIT_RESOLVER_KEY")
+    if not program or not key:
+        return None
+    cluster = str(_cfg("escrow_cluster", "devnet") or "devnet")
+    rpc = str(_cfg("escrow_rpc", "") or "") or ("https://api.devnet.solana.com" if cluster == "devnet" else "https://api.mainnet-beta.solana.com")
+    cache_key = (program, cluster, rpc, key)
+    if _ESCROW.get("k") != cache_key:
+        from .solana import Escrow
+        from .oracles import http_fetch
+        try:
+            _ESCROW.update(k=cache_key, v=Escrow(rpc, program, cluster, key, http_fetch))
+        except Exception:
+            return None
+    return _ESCROW["v"]
+
+
 def _settings() -> Settings:
     try:
         mv = int(_cfg("min_votes", 3))
     except Exception:
         mv = 3
     return Settings(tz=str(_cfg("timezone", "UTC") or "UTC"), min_votes=max(1, mv),
-                    rpc_url=str(_cfg("solana_rpc_url", "https://api.mainnet-beta.solana.com")))
+                    rpc_url=str(_cfg("solana_rpc_url", "https://api.mainnet-beta.solana.com")),
+                    escrow=_escrow(), stake_page=str(_cfg("stake_page", "https://k58v2hbzkk-del.github.io/callit/")),
+                    bot_username=str(_cfg("bot_username", "") or "").lstrip("@"))
 
 
 # ---------------------------------------------------------------- auto referee (cron)
@@ -359,7 +390,7 @@ SCHEMAS = {
             "Claims settle automatically when written like 'SOL above 300', 'BTC hits 100k', 'ETH below 2500' (crypto) "
             "or 'Arsenal beat Chelsea' / 'Real Madrid vs Barcelona draw' (football, the deadline is found automatically). "
             "Anything else is a custom call settled by a judge or a group vote and must have a deadline. "
-            "Currencies: USDC, USDT, SOL (verified on-chain), NGN/₦, USD/$." + RELAY),
+            "Stakes are crypto only: SOL, USDC, USDT." + RELAY),
         "parameters": {"type": "object", "properties": {
             "prediction": {"type": "string", "description": "Canonical call text, e.g. 'SOL above 300 by Friday 6pm stake 5 USDC'"}},
             "required": ["prediction"]},
@@ -371,7 +402,7 @@ SCHEMAS = {
                         "format as callit_make_call; video-game and real-life bets work (players report won/lost)." + RELAY),
         "parameters": {"type": "object", "properties": {
             "opponent": {"type": "string", "description": "The challenged person's @username, without @"},
-            "prediction": {"type": "string", "description": "e.g. 'I beat you in EA FC by tonight stake ₦2000'"}},
+            "prediction": {"type": "string", "description": "e.g. 'I beat you in EA FC by tonight stake 0.1 SOL'"}},
             "required": ["opponent", "prediction"]},
     },
     "callit_pool": {

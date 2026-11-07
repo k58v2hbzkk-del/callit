@@ -33,6 +33,9 @@ class Settings:
     tz: str = "UTC"
     min_votes: int = 3
     rpc_url: str = "https://api.mainnet-beta.solana.com"
+    escrow: Optional[object] = None          # solana.Escrow when the duel escrow is configured
+    stake_page: str = "https://k58v2hbzkk-del.github.io/callit/"
+    bot_username: str = ""
 
 
 def utcnow() -> datetime:
@@ -191,6 +194,13 @@ def make_call(league: str, actor: Actor, raw: Optional[str] = None, *, parsed: O
     spec["game"] = mode
     if mode == "duel":
         spec["opponent"] = opponent
+        if pc.stake and pc.stake.currency in ("SOL", "USDC", "USDT") and settings.escrow:
+            esc = settings.escrow
+            if pc.stake.currency != "SOL" and pc.stake.currency not in _mints(esc):
+                return {"ok": False, "message": f"{pc.stake.currency} isn't available on Solana {esc.cluster} yet. Use SOL or USDC."}
+            import secrets
+            spec["escrow"] = {"bet_id": secrets.randbits(52) | (1 << 52), "tok": pc.stake.currency,
+                              "amt": pc.stake.amount, "state": "waiting_creator"}
 
     if deadline <= now:
         return {"ok": False, "message": "That deadline has already passed."}
@@ -359,6 +369,17 @@ def referee(league: Optional[str] = None, *, settings: Settings = Settings(), no
             msg = None
         if msg:
             out.append(msg)
+    if settings.escrow:  # retry on-chain payouts that failed earlier (call already settled in the league)
+        q = ("SELECT id FROM calls WHERE status IN ('hit','miss','void') AND spec LIKE '%\"pending\": _%'"
+             + (" AND league=?" if league else ""))
+        for row in store.db().execute(q, (league,) if league else ()).fetchall():
+            call = get_call(row["id"])
+            code = (call["spec"].get("escrow") or {}).get("pending")
+            if code is None:
+                continue
+            res = _escrow_payout(call, {0: True, 1: False, 2: None}[code], settings)
+            if "queued" not in res:
+                out.append(f"✅ Payout for #{call['id']} went through. {res}")
     return out
 
 
@@ -397,6 +418,11 @@ def _referee_one(call: dict, settings: Settings, now: datetime, fetch) -> Option
         return lock_msg
     if call["spec"].get("game") == "pool":
         return "\n\n".join(x for x in (lock_msg, _referee_pool(call, settings, now, fetch)) if x) or None
+    if call["spec"].get("escrow") and settings.escrow:
+        esc_msg, live = _escrow_sync(call, settings, now)
+        if not live:
+            return "\n\n".join(x for x in (lock_msg, esc_msg) if x) or None
+        lock_msg = "\n\n".join(x for x in (lock_msg, esc_msg) if x) or None
     spec = call["spec"]
     deadline = dt(call["deadline"])
     result: Optional[tuple] = None   # (outcome True/False/None=void, note)
@@ -484,8 +510,9 @@ def settle(call: dict, outcome: Optional[bool], note: str, *, settings: Settings
         _log(conn, call["league"], call["id"], "settle", {"status": status, "note": note}, now)
         if outcome is None:
             conn.commit()
+            refund = _escrow_payout(call, None, settings) if call["spec"].get("escrow") and settings.escrow else ""
             return (f"🤷 CALLIT #{call['id']} is void: {note}.\n“{call['text']}”\n"
-                    "No points, no money moves.")
+                    + (refund or "No points, no money moves."))
 
         win_side = "with" if outcome else "against"
         winners = [e for e in ents if e["side"] == win_side]
@@ -499,9 +526,10 @@ def settle(call: dict, outcome: Optional[bool], note: str, *, settings: Settings
         for e in losers:
             p = _bump(conn, call, e, won=False, base=-5)
             loss_lines.append(f"{e['user_name']} {p['delta']:+d}")
-        debt_lines = _make_debts(conn, call, winners, losers, now)
+        debt_lines = [] if call["spec"].get("escrow") else _make_debts(conn, call, winners, losers, now)
         conn.commit()
 
+    chain = _escrow_payout(call, outcome, settings) if call["spec"].get("escrow") and settings.escrow else ""
     verdict = "✅ CALLED IT" if outcome else "❌ WRONG"
     head = f"🏁 CALLIT #{call['id']} · {verdict}\n“{call['text']}” by {call['author_name']}\n📊 {note}" + ("." if note[-1:].isalnum() else "")
     body = []
@@ -511,6 +539,8 @@ def settle(call: dict, outcome: Optional[bool], note: str, *, settings: Settings
         body.append("💀 " + ", ".join(loss_lines))
     if not losers and not outcome:
         body.append("Nobody faded it, so it's just a miss for the record.")
+    if chain:
+        body.append(chain)
     if debt_lines:
         body.append("💸 " + "\n💸 ".join(debt_lines))
         if call["stake_ccy"] in ONCHAIN:
@@ -807,6 +837,30 @@ def is_opponent(call: dict, actor: Actor) -> bool:
     return bool(opp) and opp in {actor.name.lower().lstrip("@"), actor.user_id.lower(), actor.user_id.split(":")[-1].lower()}
 
 
+def _mints(esc) -> dict:
+    from .solana import MINTS
+    return MINTS.get(esc.cluster, {})
+
+
+def stake_link(call: dict, action: str, settings: Settings) -> str:
+    """Link to the CALLIT stake page, which builds the escrow transaction in the player's wallet."""
+    import urllib.parse
+    esc, spec = settings.escrow, call["spec"]["escrow"]
+    q = {"a": action, "id": spec["bet_id"], "n": call["id"], "amt": f"{spec['amt']:g}", "tok": spec["tok"],
+         "dl": int(dt(call["deadline"]).timestamp()), "net": esc.cluster, "pid": esc.program,
+         "t": call["text"][:80], "vs": f"{call['author_name']} vs @{call['spec']['opponent']}"}
+    if settings.bot_username:
+        q["bot"] = settings.bot_username
+    return settings.stake_page.rstrip("/") + "/?" + urllib.parse.urlencode(q)
+
+
+def _escrow_line(call: dict, settings: Settings) -> str:
+    esc = call["spec"]["escrow"]
+    net = "" if settings.escrow.cluster == "mainnet-beta" else f" ({settings.escrow.cluster}, test coins)"
+    return (f"🔐 Stakes lock in the CALLIT escrow contract on Solana{net}. Winner gets both, paid automatically.\n"
+            f"{call['author_name']}, lock your {esc['amt']:g} {esc['tok']}: {stake_link(call, 'create', settings)}")
+
+
 def _duel_card(call: dict, note: str, settings: Settings) -> str:
     cid, opp = call["id"], call["spec"]["opponent"]
     stake = f"\n💰 Stake: {money(call['stake_amount'], call['stake_ccy'])} each" if call["stake_amount"] else ""
@@ -818,7 +872,8 @@ def _duel_card(call: dict, note: str, settings: Settings) -> str:
             f"⏳ Deadline: {fmt_time(dt(call['deadline']), settings.tz)}{stake}\n"
             f"⚖️ {how}\n\n"
             f"@{opp}, you have until {fmt_time(dt(call['lock_at']), settings.tz)}:\n"
-            f"/callit accept {cid}   ·   /callit decline {cid}")
+            f"/callit accept {cid}   ·   /callit decline {cid}"
+            + (("\n\n" + _escrow_line(call, settings)) if call["spec"].get("escrow") and settings.escrow else ""))
 
 
 def accept(league: str, cid: int, actor: Actor, *, settings: Settings = Settings(), now: Optional[datetime] = None) -> dict:
@@ -841,6 +896,11 @@ def accept(league: str, cid: int, actor: Actor, *, settings: Settings = Settings
         _log(conn, league, cid, "accept", {"by": actor.name}, now)
         conn.commit()
     stake = f" for {money(call['stake_amount'], call['stake_ccy'])} each" if call["stake_amount"] else ""
+    if call["spec"].get("escrow") and settings.escrow:
+        esc = call["spec"]["escrow"]
+        return {"ok": True, "message": (f"🤝 {actor.name} accepted duel #{cid}{stake}.\n"
+                                        f"{actor.name}, lock your {esc['amt']:g} {esc['tok']} to start it: {stake_link(call, 'join', settings)}\n"
+                                        "The duel goes live once both stakes are in the contract.")}
     after = ("" if call["kind"] in ("price", "match") or call.get("judge")
              else f"\nWhen it's done: /callit won {cid} or /callit lost {cid}")
     return {"ok": True, "message": f"🤝 DUEL ON! {call['author_name']} vs {actor.name}{stake}.\n“{call['text']}”{after}"}
@@ -883,6 +943,8 @@ def report(league: str, cid: int, actor: Actor, says: str, *, settings: Settings
         return {"ok": False, "message": f"You're not playing #{cid}. Spectators can vote if it's disputed."}
     if call["spec"].get("game") == "duel" and len(entries(cid)) < 2:
         return {"ok": False, "message": f"Duel #{cid} hasn't been accepted yet."}
+    if call["spec"].get("escrow") and call["spec"]["escrow"].get("state") != "active":
+        return {"ok": False, "message": f"Duel #{cid} starts once both stakes are locked in the contract."}
     conn = store.db()
     with store.lock():
         conn.execute("INSERT INTO reports(call_id, user_id, user_name, says, at) VALUES (?,?,?,?,?) "
@@ -1113,3 +1175,81 @@ def settle_pool(call: dict, answer: tuple, note: str, *, settings: Settings = Se
         out += ("\nPay, then post the receipt: /callit paid <debt#> <tx signature>" if ccy in ONCHAIN
                 else "\nWhen you've received it: /callit received <debt#>")
     return out
+
+
+# ====================================================================== on-chain escrow (duels)
+
+def _save_escrow(call: dict, **changes) -> None:
+    spec = dict(call["spec"])
+    spec["escrow"] = {**spec["escrow"], **changes}
+    call["spec"] = spec
+    store.db().execute("UPDATE calls SET spec=? WHERE id=?", (json.dumps(spec), call["id"]))
+    store.db().commit()
+
+
+def _escrow_sync(call: dict, settings: Settings, now: datetime) -> tuple[Optional[str], bool]:
+    """Follow the duel's escrow account. Returns (announcement, is_live)."""
+    esc, cid = call["spec"]["escrow"], call["id"]
+    if esc.get("pending") is not None:
+        msg = _escrow_payout(call, {0: True, 1: False, 2: None}[esc["pending"]], settings)
+        return msg, False
+    if esc.get("state") == "active":
+        return None, True
+    try:
+        bet = settings.escrow.get_bet(esc["bet_id"])
+    except Exception:
+        return None, False  # RPC hiccup: try again next tick
+    opp = call["spec"]["opponent"]
+    if bet is None:
+        if now >= dt(call["lock_at"]) and call["status"] in ("open", "locked"):
+            return settle(call, None, f"{call['author_name']} never locked their stake", settings=settings, now=now), False
+        return None, False
+    if bet["status"] == "open":
+        msg = None
+        if esc.get("state") == "waiting_creator":
+            mine = _wallet(call["author_id"])
+            if mine and mine != bet["creator"]:
+                return settle(call, None, "the stake came from a wallet that isn't the challenger's", settings=settings, now=now), False
+            _save_escrow(call, state="waiting_opponent", creator=bet["creator"])
+            msg = f"🔒 {call['author_name']}'s stake is locked in the contract. @{opp}: /callit accept {cid}"
+        if now >= dt(call["lock_at"]):
+            return settle(call, None, f"@{opp} didn't lock a stake in time", settings=settings, now=now), False
+        return msg, False
+    if bet["status"] == "active":
+        ents = [e for e in entries(cid) if e["side"] == "against"]
+        if not ents:
+            return settle(call, None, "a wallet joined before the opponent accepted in chat", settings=settings, now=now), False
+        theirs = _wallet(ents[0]["user_id"])
+        if theirs and theirs != bet["opponent"]:
+            return settle(call, None, "the opponent's stake came from a different wallet", settings=settings, now=now), False
+        _save_escrow(call, state="active", creator=bet["creator"], opponent=bet["opponent"])
+        how = ("I'll settle it from live data." if call["kind"] in ("price", "match") else
+               f"When it's done: /callit won {cid} or /callit lost {cid}")
+        return (f"⚔️ DUEL #{cid} IS LIVE. Both stakes ({esc['amt']:g} {esc['tok']} each) are locked on-chain.\n{how}"), True
+    return None, False  # already released on-chain
+
+
+def _escrow_payout(call: dict, outcome: Optional[bool], settings: Settings) -> str:
+    esc = call["spec"]["escrow"]
+    code = 2 if outcome is None else (0 if outcome else 1)
+    try:
+        bet = settings.escrow.get_bet(esc["bet_id"])
+        if bet is None:
+            _save_escrow(call, pending=None)
+            return "No stakes were locked, so no money moves." if code == 2 else ""
+        if bet["status"] == "open":
+            code = 2
+        sig = settings.escrow.settle(esc["bet_id"], code)
+    except Exception as exc:
+        _save_escrow(call, pending=code)
+        _log(store.db(), call["league"], call["id"], "payout_retry", {"error": str(exc)[:200]})
+        store.db().commit()
+        return "⏳ On-chain payout is queued. I'll retry until it goes through (funds stay safe in the contract)."
+    _save_escrow(call, pending=None, payout_tx=sig, state="paid")
+    _log(store.db(), call["league"], call["id"], "payout", {"tx": sig, "code": code})
+    store.db().commit()
+    if code == 2:
+        return f"↩️ Stakes refunded on-chain: {settings.escrow.explorer(sig)}"
+    pot = esc["amt"] * 2
+    winner = call["author_name"] if code == 0 else f"@{call['spec']['opponent']}"
+    return f"💸 Paid {pot:g} {esc['tok']} to {winner} on-chain: {settings.escrow.explorer(sig)}"
