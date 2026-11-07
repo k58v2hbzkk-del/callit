@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Health report for remote debugging: every 2 minutes the bot's last warnings/errors
+# (tokens masked) go to the bot-status branch, so it can be checked without opening the codespace.
+REPO="$1"; LOG="$2"
+mkdir -p /tmp/st && cd /tmp/st && { [ -d .git ] || git init -q; }
+while true; do
+  {
+    date -u
+    if pgrep -f "hermes gateway run" >/dev/null; then echo RUNNING; else echo STOPPED; fi
+    git -C "$REPO" rev-parse --short HEAD
+    grep -aE "WARNING|ERROR|Traceback|Exception|rror:|callit|inbound|group|Connected|polling" "$LOG" | tail -n 80 \
+      | sed -E 's/[0-9]{6,}:[A-Za-z0-9_-]{20,}/<token>/g; s/(sk-or-[A-Za-z0-9-]{4})[A-Za-z0-9-]+/\1.../g'
+  } > status.txt
+  git add status.txt
+  git -c user.name=callit-bot -c user.email=bot@callit.local commit -qm status >/dev/null 2>&1
+  git push -qf https://github.com/k58v2hbzkk-del/callit HEAD:bot-status >/dev/null 2>&1
+  sleep 120
+done

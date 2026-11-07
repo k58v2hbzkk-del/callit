@@ -10,13 +10,22 @@ say() { printf "\n\033[1;35m==> %s\033[0m\n" "$1"; }
 
 LOG=/tmp/callit-bot.log
 # Already running (the codespace starts the bot by itself)? Just show its live log.
+REPO="$(cd "$(dirname "$0")" && pwd)"
 if pgrep -f "hermes gateway run" >/dev/null 2>&1; then
-  say "CALLIT is already running. Showing the live log (control + C only hides it, the bot keeps going)."
-  exec tail -n 40 -f "$LOG"
+  BEFORE=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)
+  git -C "$REPO" pull -q --ff-only 2>/dev/null || true
+  if [ "$BEFORE" = "$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" ]; then
+    if [ "$1" = "--background" ]; then exit 0; fi
+    say "CALLIT is already running. Showing the live log (control + C only hides it, the bot keeps going)."
+    exec tail -n 60 -f "$LOG"
+  fi
+  say "New CALLIT version found - restarting the bot..."
+  pkill -f "hermes gateway run" || true
+  sleep 3
 fi
 
 # Always use the newest CALLIT code.
-git -C "$(dirname "$0")" pull -q --ff-only 2>/dev/null || true
+git -C "$REPO" pull -q --ff-only 2>/dev/null || true
 
 if ! command -v hermes >/dev/null 2>&1; then
   say "Installing Hermes (2-4 minutes)..."
@@ -96,11 +105,20 @@ hermes config set plugins.entries.callit.settings.bot_username "${CALLIT_BOT:-Ca
 hermes config set platform_toolsets.telegram '["callit"]' >/dev/null 2>&1 || true
 hermes config set platform_toolsets.discord '["callit"]' >/dev/null 2>&1 || true
 
+# Public bot: strangers may only run /callit (and /help, /start) - never Hermes admin commands
+# like /yolo, /update or /restart. Nobody is listed as admin ("0" is not a real Telegram user).
+for scope in "" "group_"; do
+  hermes config set "telegram.${scope}allow_admin_from" '["0"]' >/dev/null 2>&1 || true
+  hermes config set "telegram.${scope}user_allowed_commands" '["callit","start"]' >/dev/null 2>&1 || true
+done
+
 say "Starting the bot. Go to your Telegram group and type:  /callit help"
 say "(Keep this tab open. To stop: press control + C)"
 if [ "$1" = "--background" ]; then
   setsid nohup hermes gateway run >> "$LOG" 2>&1 < /dev/null &
   say "CALLIT is running in the background (log: $LOG)."
+  pkill -f "status-loop" >/dev/null 2>&1 || true
+  setsid nohup bash "$REPO/status-loop" "$REPO" "$LOG" >/dev/null 2>&1 < /dev/null &
 else
   exec hermes gateway run
 fi
