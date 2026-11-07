@@ -9,6 +9,8 @@ Surfaces used (all public plugin APIs):
 
 from __future__ import annotations
 
+import os
+
 import json
 import re
 from typing import Any, Optional
@@ -99,9 +101,10 @@ def _cfg(key: str, default: Any) -> Any:
 def _secret(name: str) -> str:
     try:
         from agent.secret_scope import get_secret
-        return get_secret(name) or ""
+        val = get_secret(name) or ""
     except Exception:
-        return ""
+        val = ""
+    return val or os.environ.get(name, "")
 
 
 _ESCROW: dict = {}
@@ -109,7 +112,7 @@ _ESCROW: dict = {}
 
 def _escrow():
     """The duel escrow client, when a program id and referee key are configured."""
-    program = str(_cfg("escrow_program", "") or "").strip()
+    program = str(_cfg("escrow_program", "FGJphifTMxBzKkhnGsxW9wBnw3bzrExuasMxLxdhzQox") or "").strip()
     key = _secret("CALLIT_RESOLVER_KEY")
     if not program or not key:
         return None
