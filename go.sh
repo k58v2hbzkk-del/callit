@@ -18,6 +18,17 @@ say "Hermes: $(hermes --version 2>/dev/null | head -1)"
 mkdir -p "$(dirname "$ENV_FILE")"
 touch "$ENV_FILE"
 
+# Codespaces secrets (github.com/settings/codespaces) arrive as environment variables: use them if set.
+if [ -n "$TELEGRAM_BOT_TOKEN" ] && ! grep -q '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE"; then
+  printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_ALLOW_ALL_USERS=true\n' "$TELEGRAM_BOT_TOKEN" >> "$ENV_FILE"
+  say "Bot token loaded from your Codespaces secret."
+fi
+if [ -n "$OPENROUTER_API_KEY" ] && ! grep -q '^OPENROUTER_API_KEY=' "$ENV_FILE"; then
+  printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY" >> "$ENV_FILE"
+  hermes config set model.provider openrouter >/dev/null
+  say "OpenRouter key loaded from your Codespaces secret."
+fi
+
 if ! grep -q '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE"; then
   say "Paste your Telegram bot token from @BotFather, then press return (it stays hidden):"
   read -rs TOKEN; echo
