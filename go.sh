@@ -32,6 +32,10 @@ fi
 if ! grep -q '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE"; then
   say "Paste your Telegram bot token from @BotFather, then press return (it stays hidden):"
   read -rs TOKEN; echo
+  if [ -z "$TOKEN" ]; then
+    say "No token entered. Save it as a Codespaces secret named TELEGRAM_BOT_TOKEN, restart the codespace, then run: bash go.sh"
+    exit 1
+  fi
   printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_ALLOW_ALL_USERS=true\n' "$TOKEN" >> "$ENV_FILE"
   say "Bot token saved."
 fi
