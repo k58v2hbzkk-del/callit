@@ -1,0 +1,32 @@
+manifest_version: 2
+name: callit
+version: "1.0.0"
+description: "CALLIT turns any group chat into a prediction league. Friends make calls (prices, football, anything), others back or fade them, and Hermes referees: it locks entries, checks real results, scores a season leaderboard and settles optional money stakes with on-chain receipts."
+author: Tajudeen (@Tajudeen)
+license: MIT
+requires_hermes: ">=0.22.5"
+tags: [games, social, group-chat, telegram, discord, whatsapp, predictions, sports, crypto]
+provides_tools:
+  - callit_make_call
+  - callit_join
+  - callit_vote
+  - callit_board
+  - callit_referee
+provides_hooks: []
+config_schema:
+  timezone:
+    type: str
+    default: "UTC"
+    description: "IANA timezone used to read deadlines like 'by Friday 6pm' (e.g. Africa/Lagos, Europe/London)."
+  min_votes:
+    type: int
+    default: 3
+    description: "Votes needed to settle a custom call that has no named judge."
+  solana_rpc_url:
+    type: str
+    default: "https://api.mainnet-beta.solana.com"
+    description: "Solana RPC used only to verify payment receipts (/callit paid). Read-only."
+  referee_every:
+    type: str
+    default: "15m"
+    description: "How often the auto-referee checks due calls after '/callit referee on'."
