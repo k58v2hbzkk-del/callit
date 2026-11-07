@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command setup for trying CALLIT in a GitHub Codespace (or any Linux box).
-#   bash go.sh        -> installs Hermes, connects your Telegram bot, installs CALLIT, starts the bot
+#   bash go        -> installs Hermes, connects your Telegram bot, installs CALLIT, starts the bot
 # Safe to run again: it skips anything already done.
 set -e
 export PATH="$HOME/.local/bin:$PATH"
@@ -83,7 +83,7 @@ if [ -d "$HOME/.hermes/plugins/callit" ]; then
   timeout 300 hermes plugins update callit </dev/null \
     || timeout 300 hermes plugins install k58v2hbzkk-del/callit --force --enable --yes-deps </dev/null || true
 else
-  timeout 300 hermes plugins install k58v2hbzkk-del/callit --enable --yes-deps </dev/null || true
+  timeout 300 hermes plugins install k58v2hbzkk-del/callit --force --enable --yes-deps </dev/null || true
 fi
 [ -d "$HOME/.hermes/plugins/callit" ] || { echo "CALLIT could not be installed - send a screenshot of this."; exit 1; }
 hermes plugins enable callit >/dev/null 2>&1 || true

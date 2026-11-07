@@ -42,7 +42,7 @@ jobs:
           B=$(solana balance "$D" -u devnet | awk '{print $1}')
           echo "Deployer $D has $B SOL"
           if awk "BEGIN{exit !($B < 1.6)}"; then
-            echo "::error::Devnet faucet is rate-limited. Send free devnet SOL to $D at https://faucet.solana.com then re-run this workflow."
+            echo "::error::Devnet faucet is rate-limited. Fund $D with free devnet SOL (Solana faucet) and re-run this workflow."
             exit 1
           fi
 
