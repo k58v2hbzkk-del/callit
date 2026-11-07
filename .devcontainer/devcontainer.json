@@ -1,0 +1,7 @@
+{
+  "name": "CALLIT bot",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  // Every time the codespace starts or wakes up, the bot starts by itself - nothing to type.
+  "postStartCommand": "bash go --background",
+  "customizations": { "codespaces": { "openFiles": ["README.md"] } }
+}

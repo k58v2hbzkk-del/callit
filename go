@@ -8,6 +8,16 @@ ENV_FILE="$HOME/.hermes/.env"
 
 say() { printf "\n\033[1;35m==> %s\033[0m\n" "$1"; }
 
+LOG=/tmp/callit-bot.log
+# Already running (the codespace starts the bot by itself)? Just show its live log.
+if pgrep -f "hermes gateway run" >/dev/null 2>&1; then
+  say "CALLIT is already running. Showing the live log (control + C only hides it, the bot keeps going)."
+  exec tail -n 40 -f "$LOG"
+fi
+
+# Always use the newest CALLIT code.
+git -C "$(dirname "$0")" pull -q --ff-only 2>/dev/null || true
+
 if ! command -v hermes >/dev/null 2>&1; then
   say "Installing Hermes (2-4 minutes)..."
   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --non-interactive --skip-browser --skip-computer-use
@@ -88,4 +98,9 @@ hermes config set platform_toolsets.discord '["callit"]' >/dev/null 2>&1 || true
 
 say "Starting the bot. Go to your Telegram group and type:  /callit help"
 say "(Keep this tab open. To stop: press control + C)"
-exec hermes gateway run
+if [ "$1" = "--background" ]; then
+  setsid nohup hermes gateway run >> "$LOG" 2>&1 < /dev/null &
+  say "CALLIT is running in the background (log: $LOG)."
+else
+  exec hermes gateway run
+fi
