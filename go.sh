@@ -64,6 +64,23 @@ fi
 hermes plugins enable callit >/dev/null 2>&1 || true
 hermes config set plugins.entries.callit.settings.timezone "${CALLIT_TZ:-Africa/Lagos}" >/dev/null
 
+# Duel escrow: give the bot its own referee key (only it can settle duels it refereed)
+if ! grep -q '^CALLIT_RESOLVER_KEY=' "$ENV_FILE"; then
+  say "Creating the bot's referee key for the duel escrow..."
+  DER=$(mktemp); openssl genpkey -algorithm ed25519 -outform DER -out "$DER" 2>/dev/null
+  KEYJSON=$(python3 - "$DER" <<'PY'
+import json, subprocess, sys
+der = open(sys.argv[1], "rb").read()
+seed = der[-32:]
+pub = subprocess.run(["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER", "-in", sys.argv[1]], capture_output=True).stdout[-32:]
+print(json.dumps(list(seed + pub), separators=(",", ":")))
+PY
+)
+  rm -f "$DER"
+  printf 'CALLIT_RESOLVER_KEY=%s\n' "$KEYJSON" >> "$ENV_FILE"
+fi
+hermes config set plugins.entries.callit.settings.bot_username "${CALLIT_BOT:-CallitHQBot}" >/dev/null 2>&1 || true
+
 # Safety: in Telegram the AI may only use CALLIT's own tools - never the shell, files or web.
 # (Strangers can message a public bot; this keeps them away from the server and its keys.)
 hermes config set platform_toolsets.telegram '["callit"]' >/dev/null 2>&1 || true

@@ -851,6 +851,8 @@ def stake_link(call: dict, action: str, settings: Settings) -> str:
          "t": call["text"][:80], "vs": f"{call['author_name']} vs @{call['spec']['opponent']}"}
     if settings.bot_username:
         q["bot"] = settings.bot_username
+    if getattr(esc, "resolver", None):
+        q["ref"] = esc.resolver
     return settings.stake_page.rstrip("/") + "/?" + urllib.parse.urlencode(q)
 
 
@@ -1200,6 +1202,10 @@ def _escrow_sync(call: dict, settings: Settings, now: datetime) -> tuple[Optiona
     except Exception:
         return None, False  # RPC hiccup: try again next tick
     opp = call["spec"]["opponent"]
+    if bet is not None and getattr(settings.escrow, "resolver", None) and bet.get("resolver") not in (None, settings.escrow.resolver):
+        _save_escrow(call, state="foreign")
+        return settle(call, None, "that stake names a different referee, so CALLIT can't settle it (the creator can cancel it on the stake page)",
+                      settings=settings, now=now), False
     if bet is None:
         if now >= dt(call["lock_at"]) and call["status"] in ("open", "locked"):
             return settle(call, None, f"{call['author_name']} never locked their stake", settings=settings, now=now), False
@@ -1232,6 +1238,8 @@ def _escrow_sync(call: dict, settings: Settings, now: datetime) -> tuple[Optiona
 def _escrow_payout(call: dict, outcome: Optional[bool], settings: Settings) -> str:
     esc = call["spec"]["escrow"]
     code = 2 if outcome is None else (0 if outcome else 1)
+    if esc.get("state") == "foreign":
+        return "CALLIT can't move that stake. The creator can take it back with Cancel on the stake page."
     try:
         bet = settings.escrow.get_bet(esc["bet_id"])
         if bet is None:

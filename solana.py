@@ -96,16 +96,26 @@ def ata(owner: str, mint: str) -> str:
 # ---------------------------------------------------------------- bet account
 
 def decode_bet(data: bytes) -> dict:
-    if len(data) < 125:
+    if len(data) < 157:
         raise ValueError("not a bet account")
     status, kind = data[0], data[1]
     bet_id, amount, deadline = struct.unpack_from("<QQq", data, 4)
     return {"status": STATUS.get(status, "?"), "kind": "spl" if kind == 1 else "sol", "bet_id": bet_id,
             "amount": amount, "deadline": deadline, "creator": b58encode(data[28:60]),
-            "opponent": b58encode(data[60:92]), "mint": b58encode(data[92:124]), "winner": data[124]}
+            "opponent": b58encode(data[60:92]), "mint": b58encode(data[92:124]), "winner": data[124],
+            "resolver": b58encode(data[125:157])}
 
 
 # ---------------------------------------------------------------- keys + transactions
+
+def new_keypair_secret() -> str:
+    """A fresh Solana keypair in solana-keygen's JSON format (64 bytes: seed + public key)."""
+    from cryptography.hazmat.primitives import serialization
+    k = Ed25519PrivateKey.generate()
+    seed = k.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+    pub = k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    return json.dumps(list(seed + pub), separators=(",", ":"))
+
 
 def load_keypair(secret: str) -> Ed25519PrivateKey:
     secret = secret.strip()
@@ -196,6 +206,7 @@ class Escrow:
         """outcome: 0 = creator wins, 1 = opponent wins, 2 = refund. Returns the tx signature."""
         if not self.key:
             raise RuntimeError("referee key not configured")
+        self.ensure_fee_money()
         bet = self.get_bet(bet_id)
         if not bet:
             raise RuntimeError("no locked stake found for this duel")
@@ -204,6 +215,17 @@ class Escrow:
         bh = self._call("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"]
         tx = build_tx(self.key, self.program, settle_metas(self.program, bet_id, self.resolver, bet), bytes([2, outcome]), bh)
         return self._call("sendTransaction", [base64.b64encode(tx).decode(), {"encoding": "base64", "preflightCommitment": "confirmed"}])
+
+    def ensure_fee_money(self) -> None:
+        """On devnet, top up the referee with free test SOL so it can pay transaction fees."""
+        if self.cluster != "devnet" or not self.resolver:
+            return
+        try:
+            lamports = self._call("getBalance", [self.resolver, {"commitment": "confirmed"}])["value"]
+            if lamports < 20_000_000:
+                self._call("requestAirdrop", [self.resolver, 1_000_000_000])
+        except Exception:
+            pass
 
     def explorer(self, sig: str) -> str:
         return f"https://solscan.io/tx/{sig}" + ("?cluster=devnet" if self.cluster == "devnet" else "")

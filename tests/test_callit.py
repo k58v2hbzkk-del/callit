@@ -302,13 +302,14 @@ def test_any_bet_defaults_deadline(cl):
 
 class FakeChain:
     """Stands in for solana.Escrow: holds bet states, records payouts, can fail on demand."""
-    cluster, program = "devnet", "9fhzt61u3YzUWYRY66E3ArvJVS2We8jvaHVuSLuUdT9Q"
+    cluster, program, resolver = "devnet", "9fhzt61u3YzUWYRY66E3ArvJVS2We8jvaHVuSLuUdT9Q", "REFEREE"
 
     def __init__(self):
         self.bets, self.paid, self.fail = {}, [], False
 
     def get_bet(self, bet_id):
-        return self.bets.get(bet_id)
+        b = self.bets.get(bet_id)
+        return {"resolver": "REFEREE", **b} if b else None
 
     def settle(self, bet_id, outcome):
         if self.fail:
@@ -393,3 +394,15 @@ def test_escrow_refunds(cl):
     lock = eng.dt(eng.get_call(cid)["lock_at"])
     out = "\n".join(eng.referee("tg:g1", settings=S, now=lock + timedelta(minutes=1)))
     assert "void" in out and len(ch.paid) == 1
+
+
+def test_escrow_rejects_foreign_referee(cl):
+    eng, _ = cl
+    ch = FakeChain()
+    S = _settings(ch)
+    r = eng.make_call("tg:g1", A("Taj"), "I win at chess by tonight stake 0.1 SOL", settings=S, now=T0, mode="duel", opponent="truth")
+    assert "ref=REFEREE" in r["message"]
+    bid = eng.get_call(r["call_id"])["spec"]["escrow"]["bet_id"]
+    ch.bets[bid] = {"status": "open", "creator": "W1", "opponent": "1" * 32, "resolver": "EvilRef"}
+    out = "\n".join(eng.referee("tg:g1", settings=S, now=T0 + timedelta(minutes=1)))
+    assert "different referee" in out and ch.paid == []

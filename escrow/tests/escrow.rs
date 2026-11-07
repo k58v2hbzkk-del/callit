@@ -54,6 +54,7 @@ fn ix_create(pid: &Pubkey, creator: &Pubkey, id: u64, amount: u64, deadline: i64
     data.extend_from_slice(&amount.to_le_bytes());
     data.extend_from_slice(&deadline.to_le_bytes());
     data.extend_from_slice(opp.as_ref());
+    data.extend_from_slice(resolver().pubkey().as_ref());
     let mut accs = vec![AccountMeta::new(*creator, true), AccountMeta::new(bet, false), AccountMeta::new_readonly(system_program::ID, false)];
     if let Some((mint, ct)) = spl {
         accs.extend([AccountMeta::new_readonly(mint, false), AccountMeta::new(ct, false),

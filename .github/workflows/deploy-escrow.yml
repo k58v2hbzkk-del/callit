@@ -1,0 +1,65 @@
+name: Deploy CALLIT escrow (devnet)
+
+# Builds the escrow program and deploys it to Solana devnet, then makes it immutable
+# (no upgrade key), so nobody - including us - can change the rules after people lock stakes.
+on:
+  push:
+    branches: [main]
+    paths: ["escrow/src/**", "escrow/Cargo.toml", ".github/workflows/deploy-escrow.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Solana tools
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Already deployed?
+        id: check
+        run: |
+          PID=$(solana-keygen pubkey escrow/devnet/program.json)
+          echo "pid=$PID" >> "$GITHUB_OUTPUT"
+          if solana program show "$PID" -u devnet; then echo "deployed=yes" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Fund the deployer with devnet SOL
+        if: steps.check.outputs.deployed != 'yes'
+        run: |
+          D=$(solana-keygen pubkey escrow/devnet/deployer.json)
+          for i in 1 2 3 4 5 6 7 8; do
+            B=$(solana balance "$D" -u devnet | awk '{print $1}')
+            if awk "BEGIN{exit !($B >= 2.5)}"; then break; fi
+            solana airdrop 2 "$D" -u devnet || true
+            sleep 20
+          done
+          B=$(solana balance "$D" -u devnet | awk '{print $1}')
+          echo "Deployer $D has $B SOL"
+          if awk "BEGIN{exit !($B < 2.5)}"; then
+            echo "::error::Devnet faucet is rate-limited. Send free devnet SOL to $D at https://faucet.solana.com then re-run this workflow."
+            exit 1
+          fi
+
+      - name: Build
+        if: steps.check.outputs.deployed != 'yes'
+        run: cd escrow && rm -rf tests && cargo build-sbf
+
+      - name: Deploy and lock (immutable)
+        if: steps.check.outputs.deployed != 'yes'
+        run: |
+          solana program deploy escrow/target/deploy/callit_escrow.so \
+            --program-id escrow/devnet/program.json --keypair escrow/devnet/deployer.json -u devnet
+          solana program set-upgrade-authority "${{ steps.check.outputs.pid }}" --final \
+            --keypair escrow/devnet/deployer.json -u devnet
+
+      - name: Summary
+        run: |
+          echo "### CALLIT escrow on devnet" >> "$GITHUB_STEP_SUMMARY"
+          echo "Program: \`${{ steps.check.outputs.pid }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://solscan.io/account/${{ steps.check.outputs.pid }}?cluster=devnet" >> "$GITHUB_STEP_SUMMARY"

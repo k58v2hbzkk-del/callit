@@ -2,7 +2,7 @@
 //!
 //! Two players lock equal stakes (SOL or one SPL token such as USDC/USDT) in a bet account
 //! owned by this program. Money can only ever leave to one of those two players:
-//!   * `Settle`  - the CALLIT referee key (fixed at build time) picks the winner, or refunds
+//!   * `Settle`  - the referee named in the bet (the CALLIT bot) picks the winner, or refunds
 //!   * `Concede` - either player gives the win to the other, no referee needed
 //!   * `Cancel`  - the creator takes their stake back before anyone joins
 //!   * `Expire`  - if the referee never settles, anyone can refund both players 7 days after the deadline
@@ -24,12 +24,10 @@ use solana_program::{
 #[cfg(not(feature = "no-entrypoint"))]
 solana_program::entrypoint!(process_instruction);
 
-/// The CALLIT referee. `deploy.sh` replaces this with the bot's own key before building.
-pub const RESOLVER: Pubkey = solana_program::pubkey!("9fhzt61u3YzUWYRY66E3ArvJVS2We8jvaHVuSLuUdT9Q");
 /// Classic SPL Token program (USDC and USDT on Solana use it).
 pub const TOKEN_PROGRAM: Pubkey = solana_program::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
-pub const BET_LEN: usize = 128;
+pub const BET_LEN: usize = 160;
 pub const TOKEN_ACCOUNT_LEN: u64 = 165;
 pub const EXPIRE_GRACE: i64 = 7 * 24 * 3600;
 
@@ -53,11 +51,13 @@ pub struct Bet {
     pub opponent: Pubkey,
     pub mint: Pubkey,
     pub winner: u8,
+    /// The referee allowed to settle this bet. The joining player sees and accepts it.
+    pub resolver: Pubkey,
 }
 
 impl Bet {
     pub fn unpack(d: &[u8]) -> Result<Self, ProgramError> {
-        if d.len() < 125 {
+        if d.len() < 157 {
             return Err(ProgramError::InvalidAccountData);
         }
         let pk = |a: usize| Pubkey::new_from_array(d[a..a + 32].try_into().unwrap());
@@ -74,6 +74,7 @@ impl Bet {
             opponent: pk(60),
             mint: pk(92),
             winner: d[124],
+            resolver: pk(125),
         })
     }
 
@@ -89,6 +90,7 @@ impl Bet {
         d[60..92].copy_from_slice(self.opponent.as_ref());
         d[92..124].copy_from_slice(self.mint.as_ref());
         d[124] = self.winner;
+        d[125..157].copy_from_slice(self.resolver.as_ref());
     }
 }
 
@@ -181,6 +183,10 @@ fn create(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Program
     let amount = read_u64(data, 8)?;
     let deadline = read_u64(data, 16)? as i64;
     let opponent = Pubkey::new_from_array(data.get(24..56).ok_or(ProgramError::InvalidInstructionData)?.try_into().unwrap());
+    let resolver = Pubkey::new_from_array(data.get(56..88).ok_or(ProgramError::InvalidInstructionData)?.try_into().unwrap());
+    if resolver == *creator.key || resolver == Pubkey::default() {
+        return Err(err("the referee can't be a player"));
+    }
     if amount == 0 {
         return Err(err("stake must be more than zero"));
     }
@@ -202,7 +208,7 @@ fn create(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Program
     let seeds: &[&[u8]] = &[b"bet", &bet_id.to_le_bytes(), &[bump]];
     let mut bet = Bet {
         status: OPEN, kind: KIND_SOL, bump, vault_bump: 0, bet_id, amount, deadline,
-        creator: *creator.key, opponent, mint: Pubkey::default(), winner: 0,
+        creator: *creator.key, opponent, mint: Pubkey::default(), winner: 0, resolver,
     };
     if !spl {
         let lamports = rent.minimum_balance(BET_LEN).checked_add(amount).ok_or(ProgramError::ArithmeticOverflow)?;
@@ -272,8 +278,8 @@ fn join(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     if Clock::get()?.unix_timestamp >= bet.deadline {
         return Err(err("too late to join"));
     }
-    if joiner.key == &bet.creator {
-        return Err(err("you can't join your own duel"));
+    if joiner.key == &bet.creator || joiner.key == &bet.resolver {
+        return Err(err("you can't join this duel"));
     }
     if bet.opponent != Pubkey::default() && joiner.key != &bet.opponent {
         return Err(err("this duel is for someone else"));
@@ -330,7 +336,7 @@ fn release(program_id: &Pubkey, accounts: &[AccountInfo], how: Release) -> Progr
     // outcome: 0 = creator wins, 1 = opponent wins, 2 = refund
     let outcome = match how {
         Release::Settle(w) => {
-            if signer.key != &RESOLVER {
+            if signer.key != &bet.resolver {
                 return Err(err("only the CALLIT referee can settle"));
             }
             if w > 2 || (bet.status == OPEN && w != 2) {

@@ -43,10 +43,8 @@ if awk "BEGIN{exit !($bal < 2.5)}"; then
   exit 1
 fi
 
-say "Building the escrow with the bot as referee ($RESOLVER)..."
+say "Building the escrow..."
 BUILD="$KEYS/build"; rm -rf "$BUILD"; cp -r "$HERE" "$BUILD"
-sed -i "s/pubkey!(\"9fhzt61u3YzUWYRY66E3ArvJVS2We8jvaHVuSLuUdT9Q\")/pubkey!(\"$RESOLVER\")/" "$BUILD/src/lib.rs"
-grep -q "$RESOLVER" "$BUILD/src/lib.rs"
 (cd "$BUILD" && rm -rf tests && cargo build-sbf 2>&1 | tail -3)
 
 say "Deploying program $PROGRAM ..."

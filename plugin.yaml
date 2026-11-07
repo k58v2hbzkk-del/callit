@@ -32,7 +32,7 @@ config_schema:
     description: "Solana RPC used only to verify payment receipts (/callit paid). Read-only."
   escrow_program:
     type: str
-    default: ""
+    default: "FGJphifTMxBzKkhnGsxW9wBnw3bzrExuasMxLxdhzQox"
     description: "Solana program id of the CALLIT duel escrow (printed by escrow/deploy.sh). Empty = no on-chain stakes."
   escrow_cluster:
     type: str
