@@ -27,7 +27,7 @@ jobs:
         run: |
           PID=$(solana-keygen pubkey escrow/devnet/program.json)
           echo "pid=$PID" >> "$GITHUB_OUTPUT"
-          if solana program show "$PID" -u devnet; then echo "deployed=yes" >> "$GITHUB_OUTPUT"; fi
+          if solana program show "$PID" -u devnet --keypair escrow/devnet/deployer.json; then echo "deployed=yes" >> "$GITHUB_OUTPUT"; fi
 
       - name: Fund the deployer with devnet SOL
         if: steps.check.outputs.deployed != 'yes'
@@ -35,13 +35,13 @@ jobs:
           D=$(solana-keygen pubkey escrow/devnet/deployer.json)
           for i in 1 2 3 4 5 6 7 8; do
             B=$(solana balance "$D" -u devnet | awk '{print $1}')
-            if awk "BEGIN{exit !($B >= 2.5)}"; then break; fi
+            if awk "BEGIN{exit !($B >= 1.6)}"; then break; fi
             solana airdrop 2 "$D" -u devnet || true
             sleep 20
           done
           B=$(solana balance "$D" -u devnet | awk '{print $1}')
           echo "Deployer $D has $B SOL"
-          if awk "BEGIN{exit !($B < 2.5)}"; then
+          if awk "BEGIN{exit !($B < 1.6)}"; then
             echo "::error::Devnet faucet is rate-limited. Send free devnet SOL to $D at https://faucet.solana.com then re-run this workflow."
             exit 1
           fi
