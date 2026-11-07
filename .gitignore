@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 *.db
 .pytest_cache/
+escrow/target/
+escrow/Cargo.lock

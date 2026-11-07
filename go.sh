@@ -64,6 +64,11 @@ fi
 hermes plugins enable callit >/dev/null 2>&1 || true
 hermes config set plugins.entries.callit.settings.timezone "${CALLIT_TZ:-Africa/Lagos}" >/dev/null
 
+# Safety: in Telegram the AI may only use CALLIT's own tools - never the shell, files or web.
+# (Strangers can message a public bot; this keeps them away from the server and its keys.)
+hermes config set platform_toolsets.telegram '["callit"]' >/dev/null 2>&1 || true
+hermes config set platform_toolsets.discord '["callit"]' >/dev/null 2>&1 || true
+
 say "Starting the bot. Go to your Telegram group and type:  /callit help"
 say "(Keep this tab open. To stop: press control + C)"
 exec hermes gateway run

@@ -1,0 +1,23 @@
+[package]
+name = "callit_escrow"
+version = "0.1.0"
+edition = "2021"
+description = "CALLIT duel escrow: two players lock equal stakes; only the CALLIT referee (or a concession) can release them, and only to one of the two players."
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+solana-program = "2.2"
+
+[dev-dependencies]
+solana-program-test = "2.2"
+solana-sdk = "2.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow" }
