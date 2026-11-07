@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS votes (
   call_id INTEGER NOT NULL, user_id TEXT NOT NULL, user_name TEXT, verdict TEXT NOT NULL, at TEXT,
   PRIMARY KEY (call_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS guesses (
+  call_id INTEGER NOT NULL, user_id TEXT NOT NULL, user_name TEXT, value TEXT NOT NULL,
+  num REAL, num2 REAL, at TEXT,
+  PRIMARY KEY (call_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS reports (
+  call_id INTEGER NOT NULL, user_id TEXT NOT NULL, user_name TEXT, says TEXT NOT NULL, at TEXT,
+  PRIMARY KEY (call_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS players (
   league TEXT NOT NULL, season INTEGER NOT NULL, user_id TEXT NOT NULL, name TEXT,
   points INTEGER DEFAULT 0, wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,

@@ -77,6 +77,10 @@ You can also just talk. The agent gets five tools, so "I bet SOL flips 300 befor
 - **Football:** `Arsenal beat Chelsea`, `Real Madrid vs Barcelona draw`. CALLIT finds the fixture in the next 14 days across 20+ competitions (Premier League, La Liga, Serie A, Bundesliga, Ligue 1, UCL, UEL, AFCON, World Cup qualifiers and more). It closes sides at kickoff and settles on the final score. Nicknames like "Man U", "Barca", "Spurs" and "Super Eagles" work.
 - **Anything else:** `Davido drops an album before December judge @truth` is settled by the judge, or by a group vote when no judge is named.
 
+**Duels:** `/callit duel @friend <bet>` challenges one person. They `accept`, then after the game each side reports `won` or `lost`. A concession settles it at once; if both claim the win, the group votes. Anyone who doesn't accept in time lands in the Hall of Shame 🐔. Works for prices, football, video games (EA FC, COD…) and real life.
+
+**Pools:** `/callit pool <question>` lets everyone guess a number or score; the closest 3 win (+30/+20/+10, stakes split 50/30/20). Price and score pools settle themselves; anything else has a judge enter the answer.
+
 **Scoring:** a correct call earns 10 points plus 5 for each person on the losing side. The caller gets +5 when their own call hits, and streaks add up to +10 more. A wrong call costs 5 points.
 
 ## Money (optional)

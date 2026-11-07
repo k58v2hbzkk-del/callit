@@ -213,3 +213,88 @@ def test_command_router(cl, monkeypatch):
     # hotseat only works locally
     out = plugin.run_command("as Ada with 1", "local", A("You"), {"platform": "local"})
     assert "no call #1" in out.lower()
+
+
+def test_duel_game_bet_concede_and_money(cl):
+    eng, _ = cl
+    r = eng.make_call("tg:g1", A("Taj"), "I beat you in EA FC tonight stake 2000 naira", now=T0, mode="duel", opponent="@truth")
+    assert r["ok"], r
+    cid = r["call_id"]
+    assert "DUEL" in r["message"] and "@truth" in r["message"]
+    # strangers can't join, the opponent joins by accepting
+    assert not eng.join("tg:g1", cid, A("Ada"), "against", now=T0)["ok"]
+    assert not eng.accept("tg:g1", cid, A("Ada"), now=T0)["ok"]
+    assert "DUEL ON" in eng.accept("tg:g1", cid, A("Truth"), now=T0 + timedelta(minutes=5))["message"]
+    # Truth concedes -> Taj wins, ₦2000 debt
+    res = eng.report("tg:g1", cid, A("Truth"), "lost", now=T0 + timedelta(hours=3))
+    assert "CALLED IT" in res["message"] and "₦2,000" in res["message"]
+
+
+def test_duel_dispute_goes_to_vote(cl):
+    eng, _ = cl
+    cid = eng.make_call("tg:g1", A("Taj"), "I win at COD by tonight", now=T0, mode="duel", opponent="truth")["call_id"]
+    eng.accept("tg:g1", cid, A("Truth"), now=T0)
+    eng.report("tg:g1", cid, A("Taj"), "won", now=T0 + timedelta(hours=2))
+    res = eng.report("tg:g1", cid, A("Truth"), "won", now=T0 + timedelta(hours=2))
+    assert "Both sides claim" in res["message"]
+    eng.vote("tg:g1", cid, A("Ada"), "no", now=T0 + timedelta(hours=2))   # neutral: counts 2
+    res = eng.vote("tg:g1", cid, A("Bayo"), "no", now=T0 + timedelta(hours=2))
+    assert "WRONG" in res["message"]
+
+
+def test_duel_chicken(cl):
+    eng, _ = cl
+    cid = eng.make_call("tg:g1", A("Taj"), "Burna drops a single by Friday", now=T0, mode="duel", opponent="truth")["call_id"]
+    lock = eng.dt(eng.get_call(cid)["lock_at"])
+    msgs = eng.referee("tg:g1", now=lock + timedelta(minutes=1))
+    assert "🐔" in msgs[0] and eng.get_call(cid)["status"] == "void"
+    assert "Ran from a duel" in eng.view_shame("tg:g1")
+
+
+def test_price_pool(cl):
+    eng, orc = cl
+    f = Feed()
+    r = eng.make_pool("tg:g1", A("Taj"), "SOL price by tomorrow 6pm stake 1 USDC", now=T0, fetch=f)
+    assert r["ok"], r
+    cid = r["call_id"]
+    for who, val in [("Taj", "260"), ("Truth", "300"), ("Ada", "255"), ("Bayo", "240")]:
+        assert eng.guess("tg:g1", cid, A(who), val, now=T0 + timedelta(minutes=1))["ok"]
+    assert not eng.guess("tg:g1", cid, A("Taj"), "999", now=T0)["ok"]          # one guess each
+    assert not eng.guess("tg:g1", cid, A("Kemi"), "255", now=T0)["ok"]         # no duplicate answers
+    d = eng.dt(eng.get_call(cid)["deadline"])
+    f.history = [(d, 257.0)]
+    orc._CACHE.clear()
+    out = "\n".join(eng.referee("tg:g1", now=d + timedelta(hours=1), fetch=f))
+    assert out.index("Ada") < out.index("Taj") < out.index("Bayo")             # 255, 260, 240
+    assert "Truth" not in out.split("💀")[0] or "🥇 Ada" in out
+    assert "USDC" in out                                                       # pot was split
+
+
+def test_score_pool_and_custom_pool(cl):
+    eng, orc = cl
+    f = Feed()
+    cid = eng.make_pool("tg:g1", A("Taj"), "Arsenal vs Chelsea score", now=T0, fetch=f)["call_id"]
+    eng.guess("tg:g1", cid, A("Taj"), "2-1", now=T0)
+    eng.guess("tg:g1", cid, A("Truth"), "0-0", now=T0)
+    assert not eng.guess("tg:g1", cid, A("Ada"), "two", now=T0)["ok"]
+    f.match_state, f.score = "post", (3, 1)
+    orc._CACHE.clear()
+    out = eng.referee("tg:g1", now=eng.dt(eng.get_call(cid)["deadline"]) + timedelta(minutes=5), fetch=f)[-1]
+    assert "🥇 Taj" in out
+
+    cid = eng.make_pool("tg:g1", A("Taj"), "how many goals Osimhen scores this month", now=T0)["call_id"]
+    assert not eng.guess("tg:g1", cid, A("Taj"), "4", now=T0)["ok"]            # host judges, can't guess
+    eng.guess("tg:g1", cid, A("Truth"), "3", now=T0)
+    eng.guess("tg:g1", cid, A("Ada"), "6", now=T0)
+    lock = eng.dt(eng.get_call(cid)["lock_at"])
+    assert not eng.pool_result("tg:g1", cid, A("Truth"), "5", now=lock)["ok"]  # only the judge
+    res = eng.pool_result("tg:g1", cid, A("Taj"), "5", now=lock + timedelta(minutes=1))
+    assert "🥇 Ada" in res["message"]
+
+
+def test_any_bet_defaults_deadline(cl):
+    eng, _ = cl
+    r = eng.make_call("tg:g1", A("Taj"), "NEPA brings light before 8pm", now=T0)
+    assert r["ok"], r
+    r = eng.make_call("tg:g1", A("Taj"), "Truth will be late to class", now=T0)
+    assert r["ok"] and "24 hours" in r["message"]

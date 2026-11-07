@@ -18,15 +18,25 @@ from .engine import Actor, Settings
 
 TOOLSET = "callit"
 
-HELP = """🔮 CALLIT · the group chat prediction league
+HELP = """🔮 CALLIT · bet your friends on anything
 
-Make a call
+Group call (everyone picks a side)
   /callit SOL above 300 by Friday 6pm
   /callit Arsenal beat Chelsea stake 5 USDC
   /callit Davido drops an album before December judge @truth
+  /callit with 12   ·   /callit against 12   (closes early, no switching)
 
-Pick a side (closes early, no switching)
-  /callit with 12   ·   /callit against 12
+1v1 duel
+  /callit duel @truth I beat you in EA FC tonight stake ₦2000
+  /callit duel @ada BTC above 120k by Sunday stake 5 USDC
+  /callit accept 12 · decline 12
+  /callit won 12 · lost 12   (both claim the win → group votes)
+
+Pool (closest guesses win, top 3 split the pot)
+  /callit pool BTC price by Friday 6pm stake 1 USDC
+  /callit pool Arsenal vs Chelsea score
+  /callit pool how many goals Osimhen scores this month judge @ada
+  /callit guess 12 <answer>  ·  /callit result 12 <answer> (judge)
 
 See the league
   /callit board · table · shame · me · debts
@@ -174,6 +184,20 @@ def run_command(raw: str, league: str, actor: Actor, meta: dict, settings: Optio
 def _dispatch(low: str, text: str, league: str, actor: Actor, meta: dict, settings: Settings) -> str:
     if low in ("", "help", "?", "how"):
         return HELP
+    if m := re.match(r"^duel\s+@?(\S+)\s+(.+)$", text, re.I):
+        return engine.make_call(league, actor, m.group(2), settings=settings, mode="duel", opponent=m.group(1))["message"]
+    if m := re.match(r"^pool\s+(.+)$", text, re.I):
+        return engine.make_pool(league, actor, m.group(1), settings=settings)["message"]
+    if m := re.match(rf"^accept\s+{_ID}$", low):
+        return engine.accept(league, int(m.group(1)), actor, settings=settings)["message"]
+    if m := re.match(rf"^(?:decline|reject|withdraw|cancel)\s+{_ID}$", low):
+        return engine.decline(league, int(m.group(1)), actor, settings=settings)["message"]
+    if m := re.match(rf"^(won|win|lost|lose|concede|gg)\s+{_ID}$", low):
+        return engine.report(league, int(m.group(2)), actor, m.group(1), settings=settings)["message"]
+    if m := re.match(rf"^guess\s+{_ID}\s+(.+)$", text, re.I):
+        return engine.guess(league, int(m.group(1)), actor, m.group(2), settings=settings)["message"]
+    if m := re.match(rf"^result\s+{_ID}\s+(.+)$", text, re.I):
+        return engine.pool_result(league, int(m.group(1)), actor, m.group(2), settings=settings)["message"]
     if m := re.match(rf"^(with|back|for|agree|against|fade|doubt|cap)\s+{_ID}$", low):
         return engine.join(league, int(m.group(2)), actor, m.group(1), settings=settings)["message"]
     if m := re.match(rf"^vote\s+{_ID}\s+(\S+)$", low):
@@ -257,6 +281,39 @@ def t_make_call(args, **_):
 
 
 @_tool
+def t_duel(args, **_):
+    league, actor, meta = _identity()
+    engine.ensure_league(league, meta["platform"], meta["chat_id"], meta["thread_id"], meta["name"])
+    res = engine.make_call(league, actor, str(args.get("prediction", "")), settings=_settings(),
+                           mode="duel", opponent=str(args.get("opponent", "")))
+    return _ok(**{k: v for k, v in res.items() if k in ("ok", "call_id", "message")})
+
+
+@_tool
+def t_pool(args, **_):
+    league, actor, meta = _identity()
+    engine.ensure_league(league, meta["platform"], meta["chat_id"], meta["thread_id"], meta["name"])
+    res = engine.make_pool(league, actor, str(args.get("question", "")), settings=_settings())
+    return _ok(**{k: v for k, v in res.items() if k in ("ok", "call_id", "message")})
+
+
+@_tool
+def t_play(args, **_):
+    league, actor, _m = _identity()
+    cid, action, value = int(args["call_id"]), str(args.get("action", "")).lower(), str(args.get("value", ""))
+    s = _settings()
+    fn = {
+        "accept": lambda: engine.accept(league, cid, actor, settings=s),
+        "decline": lambda: engine.decline(league, cid, actor, settings=s),
+        "won": lambda: engine.report(league, cid, actor, "won", settings=s),
+        "lost": lambda: engine.report(league, cid, actor, "lost", settings=s),
+        "guess": lambda: engine.guess(league, cid, actor, value, settings=s),
+        "result": lambda: engine.pool_result(league, cid, actor, value, settings=s),
+    }.get(action)
+    return _ok(**fn()) if fn else _err("action must be accept, decline, won, lost, guess or result")
+
+
+@_tool
 def t_join(args, **_):
     league, actor, _m = _identity()
     return _ok(**engine.join(league, int(args["call_id"]), actor, str(args.get("side", "")), settings=_settings()))
@@ -310,6 +367,34 @@ SCHEMAS = {
             "prediction": {"type": "string", "description": "Canonical call text, e.g. 'SOL above 300 by Friday 6pm stake 5 USDC'"}},
             "required": ["prediction"]},
     },
+    "callit_duel": {
+        "name": "callit_duel",
+        "description": ("Challenge one specific person to a 1v1 bet for the person speaking. Use when someone dares or "
+                        "challenges a named friend ('I bet you @ada…', 'I beat you in FC tonight'). Same canonical prediction "
+                        "format as callit_make_call; video-game and real-life bets work (players report won/lost)." + RELAY),
+        "parameters": {"type": "object", "properties": {
+            "opponent": {"type": "string", "description": "The challenged person's @username, without @"},
+            "prediction": {"type": "string", "description": "e.g. 'I beat you in EA FC by tonight stake ₦2000'"}},
+            "required": ["opponent", "prediction"]},
+    },
+    "callit_pool": {
+        "name": "callit_pool",
+        "description": ("Start a guessing pool: everyone guesses a number or score, the closest 3 win. Settles itself for "
+                        "'<COIN> price by <when>' and '<Team A> vs <Team B> score'; otherwise needs 'judge @name'." + RELAY),
+        "parameters": {"type": "object", "properties": {
+            "question": {"type": "string", "description": "e.g. 'BTC price by Friday 6pm stake 1 USDC'"}},
+            "required": ["question"]},
+    },
+    "callit_play": {
+        "name": "callit_play",
+        "description": ("Act on an existing duel or pool for the person speaking: accept/decline a duel, report won/lost, "
+                        "guess in a pool, or (judge only) enter a pool's result." + RELAY),
+        "parameters": {"type": "object", "properties": {
+            "call_id": {"type": "integer"},
+            "action": {"type": "string", "enum": ["accept", "decline", "won", "lost", "guess", "result"]},
+            "value": {"type": "string", "description": "The guess or result, for guess/result"}},
+            "required": ["call_id", "action"]},
+    },
     "callit_join": {
         "name": "callit_join",
         "description": "Put the person speaking on a side of an existing call: 'with' (agree) or 'against' (fade). Sides close early and cannot be switched." + RELAY,
@@ -340,11 +425,11 @@ SCHEMAS = {
             "required": []},
     },
 }
-HANDLERS = {"callit_make_call": t_make_call, "callit_join": t_join, "callit_vote": t_vote,
+HANDLERS = {"callit_make_call": t_make_call, "callit_duel": t_duel, "callit_pool": t_pool, "callit_play": t_play, "callit_join": t_join, "callit_vote": t_vote,
             "callit_board": t_board, "callit_referee": t_referee}
 
 PROMPT = ("CALLIT is installed: this chat can run a prediction league. When someone makes a confident prediction or offers a bet, "
-          "offer to lock it in (or do it if they ask) with callit_make_call; use callit_join when people agree or fade a call, "
+          "offer to lock it in (or do it if they ask) with callit_make_call; callit_duel when they challenge a named person, callit_pool for guess-the-number games, callit_play to accept/decline/report/guess; use callit_join when people agree or fade a call, "
           "callit_vote for custom-call verdicts and callit_board for tables and stats. Users can also type /callit help. "
           "Never invent results: CALLIT settles from live data, a named judge or a group vote. Relay tool messages as returned.")
 

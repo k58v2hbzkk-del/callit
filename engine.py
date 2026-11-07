@@ -7,6 +7,7 @@ the referee run unattended and lets tests replay whole seasons offline.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
@@ -117,9 +118,15 @@ def lock_time(created: datetime, deadline: datetime, kickoff: Optional[datetime]
 
 def make_call(league: str, actor: Actor, raw: Optional[str] = None, *, parsed: Optional[ParsedCall] = None,
               settings: Settings = Settings(), now: Optional[datetime] = None,
-              fetch: oracles.Fetch = oracles.http_fetch) -> dict:
+              fetch: oracles.Fetch = oracles.http_fetch, mode: str = "call", opponent: Optional[str] = None) -> dict:
     now = now or utcnow()
     pc = parsed or parse_call(raw or "", now, settings.tz)
+    if mode == "duel":
+        opponent = (opponent or "").lstrip("@").strip()
+        if not opponent:
+            return {"ok": False, "message": "Who are you challenging? /callit duel @name <your call>"}
+        if opponent.lower() in {actor.name.lower().lstrip("@"), actor.user_id.lower()}:
+            return {"ok": False, "message": "You can't duel yourself 😂"}
     if pc.errors:
         return {"ok": False, "message": "Couldn't take that call: " + "; ".join(pc.errors) + "."}
     conn = store.db()
@@ -178,14 +185,20 @@ def make_call(league: str, actor: Actor, raw: Optional[str] = None, *, parsed: O
             note = f"{fx['name']} kicks off {fmt_time(kickoff, settings.tz)}."
     if pc.kind == "custom":
         if not deadline:
-            return {"ok": False, "message": "Every call needs a deadline. Add one like 'by Friday', 'by 9pm' or 'in 3 days'."}
+            deadline = now + timedelta(hours=24)
+            note = "No deadline given, so it runs for 24 hours."
         spec["judge"] = pc.judge
+    spec["game"] = mode
+    if mode == "duel":
+        spec["opponent"] = opponent
 
     if deadline <= now:
         return {"ok": False, "message": "That deadline has already passed."}
     if deadline - now > timedelta(days=366):
         return {"ok": False, "message": "Keep deadlines within a year."}
     lock_at = lock_time(now, deadline, kickoff)
+    if mode == "duel" and not kickoff:  # give the challenged friend time to see it and accept
+        lock_at = min(deadline, now + max(timedelta(minutes=30), (deadline - now) * 0.5))
 
     with store.lock():
         cur = conn.execute(
@@ -203,6 +216,8 @@ def make_call(league: str, actor: Actor, raw: Optional[str] = None, *, parsed: O
         conn.commit()
 
     call = get_call(cid)
+    if mode == "duel":
+        return {"ok": True, "call_id": cid, "call": call, "message": _duel_card(call, note, settings)}
     stake_txt = f"\n💰 Stake: {money(call['stake_amount'], call['stake_ccy'])} each side" if call["stake_amount"] else ""
     how = {
         "price": "I'll check the live price myself and settle it.",
@@ -244,6 +259,14 @@ def join(league: str, cid: int, actor: Actor, side: str, *, settings: Settings =
     call = get_call(cid)
     if not call or call["league"] != league:
         return {"ok": False, "message": f"There's no call #{cid} in this chat."}
+    game = call["spec"].get("game", "call")
+    if game == "pool":
+        return {"ok": False, "message": f"#{cid} is a pool. Drop your guess: /callit guess {cid} <your answer>"}
+    if game == "duel":
+        if side == "against" and is_opponent(call, actor):
+            return accept(league, cid, actor, settings=settings, now=now)
+        return {"ok": False, "message": f"⚔️ #{cid} is a private duel between {call['author_name']} and @{call['spec']['opponent']}. "
+                                        f"Watch it: /callit show {cid}"}
     if call["status"] != "open" or now >= dt(call["lock_at"]):
         return {"ok": False, "message": f"Too late, sides on #{cid} closed {fmt_time(dt(call['lock_at']), settings.tz)} 🔒"}
     conn = store.db()
@@ -282,7 +305,7 @@ def vote(league: str, cid: int, actor: Actor, verdict: str, *, settings: Setting
         return {"ok": False, "message": f"#{cid} is settled by live data, no vote needed 🤖"}
     if call["status"] not in ("open", "locked"):
         return {"ok": False, "message": f"#{cid} is already settled."}
-    if now < dt(call["deadline"]):
+    if now < dt(call["deadline"]) and not call["spec"].get("disputed"):
         return {"ok": False, "message": f"Voting on #{cid} opens at the deadline: {fmt_time(dt(call['deadline']), settings.tz)}."}
     conn = store.db()
     with store.lock():
@@ -296,7 +319,7 @@ def vote(league: str, cid: int, actor: Actor, verdict: str, *, settings: Setting
         return {"ok": True, "message": "\n\n".join(res)}
     tally = _tally(cid, call)
     return {"ok": True, "message": f"🗳️ {actor.name} voted {v.upper()} on #{cid}. Score so far: {tally['yes']} yes · {tally['no']} no "
-                                   f"(neutral votes count double; {settings.min_votes} votes needed)."}
+                                   f"(neutral votes count double; settles at {settings.min_votes} points)."}
 
 
 def _tally(cid: int, call: dict) -> dict:
@@ -342,6 +365,18 @@ def referee(league: Optional[str] = None, *, settings: Settings = Settings(), no
 def _lock_if_due(call: dict, now: datetime, settings: Settings) -> Optional[str]:
     if call["status"] != "open" or now < dt(call["lock_at"]):
         return None
+    game = call["spec"].get("game", "call")
+    if game == "duel" and len(entries(call["id"])) < 2:
+        opp = call["spec"]["opponent"]
+        _log(store.db(), call["league"], call["id"], "chicken", {"who": opp}, now)
+        msg = settle(call, None, f"@{opp} never accepted", settings=settings, now=now)
+        return f"🐔 @{opp} didn't accept duel #{call['id']} in time.\n" + msg
+    if game == "pool":
+        n = store.db().execute("SELECT COUNT(*) FROM guesses WHERE call_id=?", (call["id"],)).fetchone()[0]
+        store.db().execute("UPDATE calls SET status='locked' WHERE id=? AND status='open'", (call["id"],))
+        store.db().commit()
+        call["status"] = "locked"
+        return f"🔒 Pool #{call['id']} is closed with {n} guess{'es' if n != 1 else ''}. “{call['text']}”"
     conn = store.db()
     with store.lock():
         conn.execute("UPDATE calls SET status='locked' WHERE id=? AND status='open'", (call["id"],))
@@ -358,6 +393,10 @@ def _lock_if_due(call: dict, now: datetime, settings: Settings) -> Optional[str]
 
 def _referee_one(call: dict, settings: Settings, now: datetime, fetch) -> Optional[str]:
     lock_msg = _lock_if_due(call, now, settings)
+    if call["status"] not in ("open", "locked"):
+        return lock_msg
+    if call["spec"].get("game") == "pool":
+        return "\n\n".join(x for x in (lock_msg, _referee_pool(call, settings, now, fetch)) if x) or None
     spec = call["spec"]
     deadline = dt(call["deadline"])
     result: Optional[tuple] = None   # (outcome True/False/None=void, note)
@@ -403,11 +442,11 @@ def _referee_one(call: dict, settings: Settings, now: datetime, fetch) -> Option
                 result = (None, "no final score was published")
 
     else:  # custom
-        if now >= deadline:
+        if now >= deadline or spec.get("disputed"):
             t = _tally(call["id"], call)
             if call.get("judge") and t["judge"]:
                 result = (t["judge"] == "yes", f"Judge {call['judge']} ruled {t['judge'].upper()}")
-            elif not call.get("judge") and t["count"] >= settings.min_votes and t["yes"] != t["no"]:
+            elif not call.get("judge") and (t["yes"] + t["no"]) >= settings.min_votes and t["yes"] != t["no"]:
                 result = (t["yes"] > t["no"], f"Group vote: {t['yes']} yes · {t['no']} no")
             elif now - deadline > VOTE_WINDOW:
                 if t["yes"] != t["no"] and t["count"]:
@@ -464,7 +503,7 @@ def settle(call: dict, outcome: Optional[bool], note: str, *, settings: Settings
         conn.commit()
 
     verdict = "✅ CALLED IT" if outcome else "❌ WRONG"
-    head = f"🏁 CALLIT #{call['id']} · {verdict}\n“{call['text']}” by {call['author_name']}\n📊 {note}."
+    head = f"🏁 CALLIT #{call['id']} · {verdict}\n“{call['text']}” by {call['author_name']}\n📊 {note}" + ("." if note[-1:].isalnum() else "")
     body = []
     if winners:
         body.append(("🏆 " if outcome else "🙅 Faders win: ") + ", ".join(lines))
@@ -638,7 +677,15 @@ def view_board(league: str, settings: Settings = Settings()) -> str:
         a = len(ents) - w
         st = "🔒" if c["status"] == "locked" else "🟢"
         stake = f" · 💰{money(c['stake_amount'], c['stake_ccy'])}" if c["stake_amount"] else ""
-        out.append(f"{st} #{c['id']} “{c['text']}” ({c['author_name']}) · {w}🤝 {a}🙅{stake} · ends {fmt_time(dt(c['deadline']), settings.tz)}")
+        game = c["spec"].get("game", "call")
+        if game == "duel":
+            who = f"{c['author_name']} vs @{c['spec']['opponent']}" + ("" if len(ents) > 1 else " (waiting)")
+            out.append(f"⚔️ #{c['id']} “{c['text']}” · {who}{stake} · ends {fmt_time(dt(c['deadline']), settings.tz)}")
+        elif game == "pool":
+            n = store.db().execute("SELECT COUNT(*) FROM guesses WHERE call_id=?", (c["id"],)).fetchone()[0]
+            out.append(f"🎯 #{c['id']} “{c['text']}” · {n} guesses{stake} · ends {fmt_time(dt(c['deadline']), settings.tz)}")
+        else:
+            out.append(f"{st} #{c['id']} “{c['text']}” ({c['author_name']}) · {w}🤝 {a}🙅{stake} · ends {fmt_time(dt(c['deadline']), settings.tz)}")
     return "\n".join(out)
 
 
@@ -681,7 +728,9 @@ def view_shame(league: str) -> str:
                         "ORDER BY losses DESC, points ASC LIMIT 3", (league, lg["season"])).fetchall()
     unpaid = conn.execute("SELECT from_name, COUNT(*) n, ccy, SUM(amount) amt FROM debts WHERE league=? AND status='owed' "
                           "GROUP BY from_id, ccy ORDER BY amt DESC LIMIT 5", (league,)).fetchall()
-    if not (worst or cold or unpaid):
+    chickens = conn.execute("SELECT detail FROM log WHERE league=? AND event='chicken' ORDER BY id DESC LIMIT 5",
+                            (league,)).fetchall()
+    if not (worst or cold or unpaid or chickens):
         return "🧼 Hall of Shame is empty. For now."
     out = ["🤡 Hall of Shame"]
     if worst:
@@ -689,6 +738,8 @@ def view_shame(league: str) -> str:
         out += [f"  #{w['id']} “{w['text']}” ({w['author_name']}) · {w['result_note']}" for w in worst]
     if cold:
         out.append("Coldest players: " + ", ".join(f"{c['name']} ({c['losses']} L)" for c in cold))
+    if chickens:
+        out.append("🐔 Ran from a duel: " + ", ".join("@" + json.loads(c["detail"]).get("who", "?") for c in chickens))
     if unpaid:
         out.append("Still owing 👀: " + ", ".join(f"{u['from_name']} {money(u['amt'], u['ccy'])}" for u in unpaid))
     return "\n".join(out)
@@ -719,6 +770,16 @@ def view_call(league: str, cid: int, settings: Settings = Settings()) -> str:
              f"🤝 {', '.join(w) or '—'}", f"🙅 {', '.join(a) or '—'}"]
     if c["stake_amount"]:
         lines.append(f"💰 {money(c['stake_amount'], c['stake_ccy'])} each")
+    if c["spec"].get("game") == "pool":
+        gs = store.db().execute("SELECT user_name, value FROM guesses WHERE call_id=? ORDER BY at", (cid,)).fetchall()
+        lines = lines[:2]
+        if c["status"] == "open":
+            lines.append(f"🎯 {len(gs)} guesses so far (hidden until guesses close)")
+        else:
+            lines.append("🎯 " + (", ".join(f"{g['user_name']} {g['value']}" for g in gs) or "no guesses"))
+    elif c["spec"].get("game") == "duel":
+        lines[2] = f"⚔️ {c['author_name']} vs @{c['spec']['opponent']}"
+        lines.pop(3)
     if c["result_note"]:
         lines.append(f"📊 {c['result_note']}")
     return "\n".join(lines)
@@ -737,3 +798,318 @@ def audit(league: str, cid: int) -> str:
         brief = d if isinstance(d, str) else ", ".join(f"{k}={v}" for k, v in d.items() if k != "spec")
         out.append(f"{r['at'][:16].replace('T', ' ')}Z · {r['event']} · {brief}")
     return "\n".join(out)
+
+
+# ====================================================================== duels (1v1)
+
+def is_opponent(call: dict, actor: Actor) -> bool:
+    opp = str(call["spec"].get("opponent", "")).lower().lstrip("@")
+    return bool(opp) and opp in {actor.name.lower().lstrip("@"), actor.user_id.lower(), actor.user_id.split(":")[-1].lower()}
+
+
+def _duel_card(call: dict, note: str, settings: Settings) -> str:
+    cid, opp = call["id"], call["spec"]["opponent"]
+    stake = f"\n💰 Stake: {money(call['stake_amount'], call['stake_ccy'])} each" if call["stake_amount"] else ""
+    how = {"price": "I settle it from the live price.", "match": "I settle it from the final score."}.get(
+        call["kind"], (f"Judge: {call['judge']}." if call.get("judge") else
+                       f"After it's played: /callit won {cid} or /callit lost {cid}. If you both claim the win, the group votes."))
+    return (f"⚔️ DUEL #{cid}: {call['author_name']} challenges @{opp}\n“{call['text']}”\n"
+            f"{(note + chr(10)) if note else ''}"
+            f"⏳ Deadline: {fmt_time(dt(call['deadline']), settings.tz)}{stake}\n"
+            f"⚖️ {how}\n\n"
+            f"@{opp}, you have until {fmt_time(dt(call['lock_at']), settings.tz)}:\n"
+            f"/callit accept {cid}   ·   /callit decline {cid}")
+
+
+def accept(league: str, cid: int, actor: Actor, *, settings: Settings = Settings(), now: Optional[datetime] = None) -> dict:
+    now = now or utcnow()
+    call = get_call(cid)
+    if not call or call["league"] != league or call["spec"].get("game") != "duel":
+        return {"ok": False, "message": f"There's no duel #{cid} in this chat."}
+    if not is_opponent(call, actor):
+        return {"ok": False, "message": f"Only @{call['spec']['opponent']} can accept duel #{cid}."}
+    if call["status"] != "open" or now >= dt(call["lock_at"]):
+        return {"ok": False, "message": f"Duel #{cid} is no longer open."}
+    conn = store.db()
+    with store.lock():
+        if conn.execute("SELECT 1 FROM entries WHERE call_id=? AND user_id=?", (cid, actor.user_id)).fetchone():
+            return {"ok": False, "message": f"You already accepted #{cid}."}
+        conn.execute("INSERT INTO entries(call_id, user_id, user_name, side, joined_at) VALUES (?,?,?,?,?)",
+                     (cid, actor.user_id, actor.name, "against", iso(now)))
+        conn.execute("UPDATE calls SET status='locked' WHERE id=?", (cid,))
+        _player(conn, league, call["season"], actor)
+        _log(conn, league, cid, "accept", {"by": actor.name}, now)
+        conn.commit()
+    stake = f" for {money(call['stake_amount'], call['stake_ccy'])} each" if call["stake_amount"] else ""
+    after = ("" if call["kind"] in ("price", "match") or call.get("judge")
+             else f"\nWhen it's done: /callit won {cid} or /callit lost {cid}")
+    return {"ok": True, "message": f"🤝 DUEL ON! {call['author_name']} vs {actor.name}{stake}.\n“{call['text']}”{after}"}
+
+
+def decline(league: str, cid: int, actor: Actor, *, settings: Settings = Settings(), now: Optional[datetime] = None) -> dict:
+    call = get_call(cid)
+    if not call or call["league"] != league or call["spec"].get("game") != "duel":
+        return {"ok": False, "message": f"There's no duel #{cid} in this chat."}
+    if not is_opponent(call, actor) and actor.user_id != call["author_id"]:
+        return {"ok": False, "message": f"Only the two duelists can call off #{cid}."}
+    if call["status"] != "open":
+        return {"ok": False, "message": f"Duel #{cid} is already {call['status']}."}
+    who = "withdrew" if actor.user_id == call["author_id"] else "declined"
+    return {"ok": True, "message": f"🏳️ {actor.name} {who} duel #{cid}.\n" +
+            settle(call, None, f"{actor.name} {who}", settings=settings, now=now)}
+
+
+def report(league: str, cid: int, actor: Actor, says: str, *, settings: Settings = Settings(),
+           now: Optional[datetime] = None) -> dict:
+    """A player reports the result of a custom call or duel: 'won' or 'lost'.
+
+    A concession settles at once. Two players both claiming the win opens a dispute that the
+    group (or the judge) decides with /callit vote.
+    """
+    now = now or utcnow()
+    says = {"won": "won", "win": "won", "w": "won", "lost": "lost", "lose": "lost", "l": "lost",
+            "concede": "lost", "conceded": "lost", "gg": "lost"}.get(says.lower())
+    if not says:
+        return {"ok": False, "message": "Report won or lost."}
+    call = get_call(cid)
+    if not call or call["league"] != league:
+        return {"ok": False, "message": f"There's no call #{cid} in this chat."}
+    if call["kind"] != "custom" or call["spec"].get("game") == "pool":
+        return {"ok": False, "message": f"#{cid} settles itself from live data 🤖"}
+    if call["status"] not in ("open", "locked"):
+        return {"ok": False, "message": f"#{cid} is already settled."}
+    mine = next((e for e in entries(cid) if e["user_id"] == actor.user_id), None)
+    if not mine:
+        return {"ok": False, "message": f"You're not playing #{cid}. Spectators can vote if it's disputed."}
+    if call["spec"].get("game") == "duel" and len(entries(cid)) < 2:
+        return {"ok": False, "message": f"Duel #{cid} hasn't been accepted yet."}
+    conn = store.db()
+    with store.lock():
+        conn.execute("INSERT INTO reports(call_id, user_id, user_name, says, at) VALUES (?,?,?,?,?) "
+                     "ON CONFLICT(call_id, user_id) DO UPDATE SET says=excluded.says, at=excluded.at",
+                     (cid, actor.user_id, actor.name, says, iso(now)))
+        _log(conn, league, cid, "report", {"by": actor.name, "says": says}, now)
+        conn.commit()
+    reps = {r["user_id"]: r["says"] for r in conn.execute("SELECT * FROM reports WHERE call_id=?", (cid,))}
+    ents = entries(cid)
+    for side in ("with", "against"):
+        team = [e for e in ents if e["side"] == side]
+        if team and all(reps.get(e["user_id"]) == "lost" for e in team):
+            outcome = side == "against"   # this side conceded, so the other side wins
+            names = ", ".join(e["user_name"] for e in team)
+            return {"ok": True, "message": settle(call, outcome, f"{names} conceded 🫡", settings=settings, now=now)}
+    winners_claimed = {e["side"] for e in ents if reps.get(e["user_id"]) == "won"}
+    if winners_claimed == {"with", "against"} and not call["spec"].get("disputed"):
+        spec = dict(call["spec"], disputed=True)
+        conn.execute("UPDATE calls SET spec=? WHERE id=?", (json.dumps(spec), cid))
+        conn.commit()
+        judge = f"Judge {call['judge']}, your call: " if call.get("judge") else "Group, settle it: "
+        return {"ok": True, "message": f"🚨 Both sides claim the win on #{cid}. {judge}/callit vote {cid} yes|no\n"
+                                       f"(yes = {call['author_name']} was right · people not playing count double)"}
+    return {"ok": True, "message": f"📝 {actor.name} says they {says} #{cid}. Waiting for the other side."}
+
+
+# ====================================================================== pools (closest guess wins)
+
+_POOL_PRICE = re.compile(r"^\$?(?P<sym>[a-z][a-z0-9]{1,11})(?:\s+(?:price|closes?|close price|closing price))?$", re.I)
+_POOL_SCORE = re.compile(r"^(?P<a>[\w .'&-]+?)\s+(?:vs\.?|v|x|and)\s+(?P<b>[\w .'&-]+?)(?:\s+(?:final\s+)?score)?$", re.I)
+_SCORE_VAL = re.compile(r"^\s*(\d{1,2})\s*[-:–]\s*(\d{1,2})\s*$")
+POOL_SPLIT = {1: [1.0], 2: [1.0], 3: [0.5, 0.3, 0.2]}
+POOL_POINTS = [30, 20, 10]
+
+
+def make_pool(league: str, actor: Actor, raw: str, *, settings: Settings = Settings(),
+              now: Optional[datetime] = None, fetch: oracles.Fetch = oracles.http_fetch) -> dict:
+    now = now or utcnow()
+    from .parse import extract_deadline, extract_judge, extract_stake
+    text = re.sub(r"\s+", " ", raw).strip()
+    text, stake = extract_stake(text)
+    text, judge = extract_judge(text)
+    text, deadline = extract_deadline(text, now, settings.tz)
+    text = text.strip(" ,.;?")
+    if not text:
+        return {"ok": False, "message": "What's the pool about? e.g. /callit pool BTC price by Friday 6pm"}
+    spec: dict = {"game": "pool"}
+    kind, kickoff, note = "custom", None, ""
+    m = _POOL_PRICE.match(text)
+    sc = _POOL_SCORE.match(text)
+    if m and not sc:
+        coin = oracles.resolve_coin(m.group("sym"), fetch)
+        if coin:
+            live = oracles.price_now(coin["id"], fetch)
+            kind = "price"
+            spec.update(symbol=coin["symbol"], coin_id=coin["id"], start_price=live)
+            deadline = deadline or now + timedelta(hours=24)
+            note = f"Guess {coin['symbol']}'s price at the deadline. It's ${live:,.6g} now." if live else ""
+    elif sc:
+        fx = oracles.find_fixture(sc.group("a"), sc.group("b"), now, fetch=fetch)
+        if fx:
+            kind, kickoff = "match", dt(fx["kickoff"])
+            spec.update(fx)
+            deadline = kickoff + MATCH_RESULT_DELAY
+            note = f"Guess the final score of {fx['name']} (home-away, e.g. 2-1). Kicks off {fmt_time(kickoff, settings.tz)}."
+    if kind == "custom":
+        if not judge:
+            judge = actor.name
+            spec["host_judges"] = True
+        deadline = deadline or now + timedelta(hours=24)
+        note = f"Guess a number. {judge} enters the real answer: /callit result <id> <number>."
+    if deadline <= now:
+        return {"ok": False, "message": "That deadline has already passed."}
+    lock_at = kickoff or lock_time(now, deadline)
+    lg = ensure_league(league)
+    conn = store.db()
+    with store.lock():
+        cur = conn.execute(
+            "INSERT INTO calls(league, season, author_id, author_name, text, kind, spec, created_at, lock_at, deadline, "
+            "stake_amount, stake_ccy, judge) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (league, lg["season"], actor.user_id, actor.name, text, kind, json.dumps(spec), iso(now), iso(lock_at),
+             iso(deadline), stake.amount if stake else None, stake.currency if stake else None, judge))
+        cid = cur.lastrowid
+        _player(conn, league, lg["season"], actor)
+        _log(conn, league, cid, "pool", {"by": actor.name, "text": text, "kind": kind}, now)
+        conn.commit()
+    pot = f"\n💰 Entry: {money(stake.amount, stake.currency)} each · top 3 split the pot 50/30/20" if stake else ""
+    host = "\n(The host judges this one, so they can't guess.)" if spec.get("host_judges") else ""
+    return {"ok": True, "call_id": cid, "message": (
+        f"🎯 POOL #{cid} by {actor.name}\n“{text}”\n{(note + chr(10)) if note else ''}"
+        f"⏳ Result: {fmt_time(deadline, settings.tz)}\n🔒 Guesses close: {fmt_time(lock_at, settings.tz)}{pot}\n"
+        f"🏆 Closest 3 win: +30 · +20 · +10 pts{host}\n\nYour guess: /callit guess {cid} <answer>")}
+
+
+def _parse_guess(call: dict, value: str) -> Optional[tuple]:
+    if call["kind"] == "match":
+        m = _SCORE_VAL.match(value)
+        return (float(m.group(1)), float(m.group(2))) if m else None
+    try:
+        v = value.strip().lower().replace(",", "").lstrip("$₦")
+        mult = 1000 if v.endswith("k") else 1_000_000 if v.endswith("m") else 1
+        return (float(v.rstrip("km")) * mult, None)
+    except ValueError:
+        return None
+
+
+def guess(league: str, cid: int, actor: Actor, value: str, *, settings: Settings = Settings(),
+          now: Optional[datetime] = None) -> dict:
+    now = now or utcnow()
+    call = get_call(cid)
+    if not call or call["league"] != league or call["spec"].get("game") != "pool":
+        return {"ok": False, "message": f"There's no pool #{cid} in this chat."}
+    if call["status"] != "open" or now >= dt(call["lock_at"]):
+        return {"ok": False, "message": f"Guesses on #{cid} are closed 🔒"}
+    if call["spec"].get("host_judges") and actor.user_id == call["author_id"]:
+        return {"ok": False, "message": "You're the judge of this pool, so no guessing 😉"}
+    parsed = _parse_guess(call, value)
+    if not parsed:
+        hint = "a score like 2-1" if call["kind"] == "match" else "a number like 312.5 or 95k"
+        return {"ok": False, "message": f"That guess needs to be {hint}."}
+    conn = store.db()
+    with store.lock():
+        if conn.execute("SELECT 1 FROM guesses WHERE call_id=? AND user_id=?", (cid, actor.user_id)).fetchone():
+            return {"ok": False, "message": "One guess each, no changes 🔒"}
+        taken = conn.execute("SELECT user_name FROM guesses WHERE call_id=? AND num=? AND IFNULL(num2,-1)=IFNULL(?,-1)",
+                             (cid, parsed[0], parsed[1])).fetchone()
+        if taken:
+            return {"ok": False, "message": f"{taken['user_name']} already took {value}. Pick a different answer."}
+        conn.execute("INSERT INTO guesses(call_id, user_id, user_name, value, num, num2, at) VALUES (?,?,?,?,?,?,?)",
+                     (cid, actor.user_id, actor.name, value.strip(), parsed[0], parsed[1], iso(now)))
+        _player(conn, league, call["season"], actor)
+        _log(conn, league, cid, "guess", {"by": actor.name, "value": value.strip()}, now)
+        conn.commit()
+    n = conn.execute("SELECT COUNT(*) FROM guesses WHERE call_id=?", (cid,)).fetchone()[0]
+    return {"ok": True, "message": f"🎯 {actor.name} guessed {value.strip()} on #{cid}. {n} in the pool."}
+
+
+def pool_result(league: str, cid: int, actor: Actor, value: str, *, settings: Settings = Settings(),
+                now: Optional[datetime] = None) -> dict:
+    now = now or utcnow()
+    call = get_call(cid)
+    if not call or call["league"] != league or call["spec"].get("game") != "pool" or call["kind"] != "custom":
+        return {"ok": False, "message": f"#{cid} isn't a pool that needs a judge."}
+    judge = (call.get("judge") or "").lower().lstrip("@")
+    if judge not in {actor.name.lower().lstrip("@"), actor.user_id.lower()}:
+        return {"ok": False, "message": f"Only {call['judge']} can enter the result for #{cid}."}
+    if now < dt(call["lock_at"]):
+        return {"ok": False, "message": "Guesses are still open. Enter the result after they close."}
+    parsed = _parse_guess(call, value)
+    if not parsed:
+        return {"ok": False, "message": "The result needs to be a number."}
+    return {"ok": True, "message": settle_pool(call, parsed, f"{actor.name} entered the answer: {value.strip()}",
+                                               settings=settings, now=now)}
+
+
+def _referee_pool(call: dict, settings: Settings, now: datetime, fetch) -> Optional[str]:
+    deadline = dt(call["deadline"])
+    spec = call["spec"]
+    if call["kind"] == "price" and now >= deadline:
+        pts = oracles.price_range(spec["coin_id"], deadline - timedelta(hours=2), deadline + timedelta(minutes=10), fetch)
+        before = [x for x in pts if x[0] <= deadline + timedelta(minutes=5)]
+        p = (before or pts)[-1][1] if pts else (oracles.price_now(spec["coin_id"], fetch) if now - deadline < timedelta(minutes=10) else None)
+        if p is not None:
+            return settle_pool(call, (p, None), f"{spec['symbol']} was ${p:,.6g} at the deadline", settings=settings, now=now)
+    elif call["kind"] == "match" and now >= deadline:
+        res = oracles.match_result(spec, fetch)
+        if res and res.get("final") and not res.get("void"):
+            return settle_pool(call, (float(res["home_score"]), float(res["away_score"])),
+                               f"Final: {res['home']} {res['home_score']}-{res['away_score']} {res['away']}",
+                               settings=settings, now=now)
+    if now - deadline > VOID_AFTER:
+        return settle(call, None, "no result came in", settings=settings, now=now)
+    return None
+
+
+def _distance(call: dict, g: tuple, answer: tuple) -> float:
+    if call["kind"] == "match":
+        sign = lambda h, a: (h > a) - (h < a)
+        return abs(g[0] - answer[0]) + abs(g[1] - answer[1]) + (0 if sign(*g) == sign(*answer) else 0.5)
+    return abs(g[0] - answer[0])
+
+
+def settle_pool(call: dict, answer: tuple, note: str, *, settings: Settings = Settings(),
+                now: Optional[datetime] = None) -> str:
+    now = now or utcnow()
+    conn = store.db()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM guesses WHERE call_id=? ORDER BY at", (call["id"],))]
+    if not rows:
+        return settle(call, None, "nobody guessed", settings=settings, now=now)
+    ranked = sorted(rows, key=lambda r: (_distance(call, (r["num"], r["num2"]), answer), r["at"]))
+    with store.lock():
+        fresh = conn.execute("SELECT status FROM calls WHERE id=?", (call["id"],)).fetchone()
+        if fresh["status"] not in ("open", "locked"):
+            return ""
+        conn.execute("UPDATE calls SET status='hit', outcome='pool', result_note=?, settled_at=? WHERE id=?",
+                     (note, iso(now), call["id"]))
+        _log(conn, call["league"], call["id"], "settle", {"status": "pool", "note": note}, now)
+        lines, medals = [], ["🥇", "🥈", "🥉"]
+        n_win = min(3, len(ranked))
+        for i, r in enumerate(ranked):
+            e = {"user_id": r["user_id"], "user_name": r["user_name"]}
+            won = i < n_win and len(ranked) > 1
+            p = _bump(conn, call, e, won=won, base=POOL_POINTS[i] if won else -2)
+            if i < n_win:
+                lines.append(f"{medals[i]} {r['user_name']} · {r['value']} (+{p['delta']})" if won else f"{medals[i]} {r['user_name']} · {r['value']}")
+        debt_lines = []
+        amt, ccy = call["stake_amount"], call["stake_ccy"]
+        if amt and len(ranked) > 1 and ccy != "PTS":
+            split = POOL_SPLIT.get(len(ranked), POOL_SPLIT[3])
+            pot = amt * len(ranked)
+            balance = {r["user_id"]: -amt for r in ranked}
+            for i, share in enumerate(split[:len(ranked)]):
+                balance[ranked[i]["user_id"]] += pot * share
+            names = {r["user_id"]: r["user_name"] for r in ranked}
+            for frm, to, value in net_transfers(balance):
+                cur = conn.execute("INSERT INTO debts(call_id, league, from_id, from_name, to_id, to_name, amount, ccy, created_at) "
+                                   "VALUES (?,?,?,?,?,?,?,?,?)",
+                                   (call["id"], call["league"], frm, names[frm], to, names[to], round(value, 6), ccy, iso(now)))
+                debt_lines.append(f"#{cur.lastrowid}: {names[frm]} → {names[to]} {money(value, ccy)}")
+        conn.commit()
+    out = f"🏁 POOL #{call['id']} settled\n“{call['text']}”\n📊 {note}\n" + "\n".join(lines)
+    if len(ranked) == 1:
+        out += "\nOnly one guess, so no points this time."
+    if len(ranked) > 3:
+        out += f"\n💀 {len(ranked) - 3} others missed (-2)"
+    if debt_lines:
+        out += "\n💸 " + "\n💸 ".join(debt_lines)
+        out += ("\nPay, then post the receipt: /callit paid <debt#> <tx signature>" if ccy in ONCHAIN
+                else "\nWhen you've received it: /callit received <debt#>")
+    return out
