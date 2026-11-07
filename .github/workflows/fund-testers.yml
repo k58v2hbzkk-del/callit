@@ -1,0 +1,34 @@
+name: Fund devnet testers
+
+# Shares the deployer's leftover devnet SOL (test coins, no value) with tester wallets
+# listed in escrow/devnet/fund.txt.
+on:
+  push:
+    branches: [main]
+    paths: ["escrow/devnet/fund.txt"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fund:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Solana tools
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Send SOL
+        run: |
+          K=escrow/devnet/deployer.json
+          B=$(solana balance -u devnet --keypair $K | awk '{print $1}')
+          N=$(grep -c . escrow/devnet/fund.txt)
+          EACH=$(awk "BEGIN{v=($B-0.05)/$N; if(v>1.5)v=1.5; printf \"%.3f\", v}")
+          echo "Deployer has $B SOL, sending $EACH to each of $N wallets"
+          while read -r A; do
+            [ -z "$A" ] && continue
+            solana transfer -u devnet --keypair $K --fee-payer $K --allow-unfunded-recipient "$A" "$EACH"
+            echo "$A now has $(solana balance -u devnet $A)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done < escrow/devnet/fund.txt
