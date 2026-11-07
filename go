@@ -75,11 +75,17 @@ say "Preparing Telegram support..."
 hermes pm install --extra telegram >/dev/null 2>&1 || true
 
 say "Installing CALLIT..."
+# A stuck earlier install (e.g. the automatic start) holds the plugin lock: clear it first.
+for p in $(pgrep -f "hermes plugins (install|update)"); do kill "$p" 2>/dev/null || true; done
+for p in $(pgrep -f "go --background"); do [ "$p" != "$$" ] && kill "$p" 2>/dev/null || true; done
+sleep 1
 if [ -d "$HOME/.hermes/plugins/callit" ]; then
-  hermes plugins update callit </dev/null || hermes plugins install k58v2hbzkk-del/callit --force --enable --yes-deps
+  timeout 300 hermes plugins update callit </dev/null \
+    || timeout 300 hermes plugins install k58v2hbzkk-del/callit --force --enable --yes-deps </dev/null || true
 else
-  hermes plugins install k58v2hbzkk-del/callit --enable --yes-deps
+  timeout 300 hermes plugins install k58v2hbzkk-del/callit --enable --yes-deps </dev/null || true
 fi
+[ -d "$HOME/.hermes/plugins/callit" ] || { echo "CALLIT could not be installed - send a screenshot of this."; exit 1; }
 hermes plugins enable callit >/dev/null 2>&1 || true
 hermes config set plugins.entries.callit.settings.timezone "${CALLIT_TZ:-Africa/Lagos}" >/dev/null
 
