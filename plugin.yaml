@@ -4,6 +4,7 @@ version: "1.0.0"
 description: "CALLIT turns any group chat into a prediction league. Friends make calls (prices, football, anything), others back or fade them, and Hermes referees: it locks entries, checks real results, scores a season leaderboard and settles optional money stakes with on-chain receipts."
 author: Tajudeen (@Tajudeen)
 license: MIT
+homepage: https://github.com/k58v2hbzkk-del/callit
 requires_hermes: ">=0.22.5"
 tags: [games, social, group-chat, telegram, discord, whatsapp, predictions, sports, crypto]
 provides_tools:
