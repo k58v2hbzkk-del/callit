@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>CALLIT · Lock your stake</title>
+<meta name="description" content="Lock your CALLIT duel stake in the escrow contract. Winner takes both.">
+<link rel="icon" href="logo.png">
+<style>
+  :root{--amber:#F5B935;--bg:#0b0b0c;--card:#141416;--line:#26262a;--text:#f4f4f5;--mute:#9a9aa2;--good:#7ee787;--bad:#ff7b72}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{overflow-x:hidden;background:var(--bg);color:var(--text);font:16px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100dvh;display:flex;justify-content:center;padding:0 18px 40px}
+  .wrap{width:100%;max-width:440px;position:relative}
+  .lamp{position:relative;height:150px}
+  .cord{position:absolute;left:50%;top:0;width:3px;height:44px;background:#2a2a2e;transform:translateX(-50%)}
+  .shade{position:absolute;left:50%;top:44px;width:120px;height:52px;transform:translateX(-50%);background:radial-gradient(circle at 50% 20%,#3a3a3e,#151517);border-radius:60px 60px 6px 6px}
+  .bulb{position:absolute;left:50%;top:90px;width:64px;height:14px;transform:translateX(-50%);background:var(--amber);border-radius:50%;box-shadow:0 0 30px 6px rgba(245,185,53,.45)}
+  .beam{position:absolute;left:50%;top:96px;width:520px;height:560px;transform:translateX(-50%);background:linear-gradient(rgba(245,185,53,.20),rgba(245,185,53,0) 75%);clip-path:polygon(44% 0,56% 0,100% 100%,0 100%);pointer-events:none}
+  .brand{text-align:center;font-weight:900;font-size:40px;letter-spacing:-.06em;margin-top:-8px;position:relative}
+  .brand span{display:inline-block;letter-spacing:.01em;background:var(--amber);color:var(--bg);padding:0 10px 2px 9px;margin-left:6px;border-radius:6px;transform:rotate(-5deg)}
+  .card{position:relative;margin-top:22px;background:rgba(20,20,22,.92);border:1px solid var(--line);border-radius:22px;padding:22px 20px;backdrop-filter:blur(6px)}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .kicker{font-weight:800;letter-spacing:.08em;font-size:13px;color:var(--amber)}
+  .pill{font-size:11px;font-weight:700;letter-spacing:.06em;padding:4px 9px;border-radius:99px}
+  .pill.dev{background:#2b2410;color:var(--amber)} .pill.main{background:#13261a;color:var(--good)}
+  h1{font-size:22px;line-height:1.25;font-weight:800;letter-spacing:-.02em;margin:12px 0 6px}
+  .vs{color:var(--mute);font-size:15px}
+  .stake{margin:20px 0 4px;font-size:44px;font-weight:900;letter-spacing:-.04em}
+  .stakeNote,.deadline{color:var(--mute);font-size:14px}
+  .btn{display:flex;justify-content:center;align-items:center;width:100%;margin-top:14px;padding:16px;border-radius:14px;border:0;background:var(--amber);color:#111;font-weight:800;font-size:17px;text-decoration:none;cursor:pointer}
+  .btn:disabled{opacity:.55}
+  .btn.alt{background:#1d1d20;color:var(--text);border:1px solid var(--line)}
+  .who{margin-top:12px;font-size:13px;color:var(--mute);text-align:center;min-height:18px}
+  .status{margin-top:14px;font-size:15px;min-height:22px}
+  .status a{color:var(--amber)}
+  .status.good{color:var(--good)} .status.bad{color:var(--bad)}
+  .safe{margin-top:22px;color:var(--mute);font-size:13px;line-height:1.5}
+  .safe b{color:var(--text)}
+  #back{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="lamp"><div class="beam"></div><div class="cord"></div><div class="shade"></div><div class="bulb"></div></div>
+  <div class="brand">CALL<span>IT</span></div>
+  <div class="card">
+    <div class="row"><div class="kicker" id="kicker">CALLIT DUEL</div><div class="pill dev" id="net">DEVNET</div></div>
+    <h1 id="title"></h1>
+    <div class="vs" id="vs"></div>
+    <div class="stake" id="stake">–</div>
+    <div class="stakeNote" id="stakeNote"></div>
+    <div class="deadline" id="deadline"></div>
+    <div id="wallets"></div>
+    <button class="btn" id="go">Lock your stake</button>
+    <a class="btn alt" id="back" href="https://t.me">Back to Telegram</a>
+    <div class="who" id="who"></div>
+    <div class="status" id="status"></div>
+  </div>
+  <p class="safe">🔐 Your stake goes into the <b>CALLIT escrow contract</b>, not to a person. It can only be paid to <b>you or your opponent</b>: the winner, a concession, or a refund. If nobody settles, both players get refunded 7 days after the deadline.</p>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
