@@ -26,6 +26,7 @@ fi
 if [ -n "$OPENROUTER_API_KEY" ] && ! grep -q '^OPENROUTER_API_KEY=' "$ENV_FILE"; then
   printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY" >> "$ENV_FILE"
   hermes config set model.provider openrouter >/dev/null
+  hermes config set model.default "${CALLIT_MODEL:-openrouter/free}" >/dev/null
   say "OpenRouter key loaded from your Codespaces secret."
 fi
 
@@ -46,6 +47,7 @@ if ! grep -q '^OPENROUTER_API_KEY=' "$ENV_FILE"; then
   if [ -n "$KEY" ]; then
     printf 'OPENROUTER_API_KEY=%s\n' "$KEY" >> "$ENV_FILE"
     hermes config set model.provider openrouter >/dev/null
+    hermes config set model.default "${CALLIT_MODEL:-openrouter/free}" >/dev/null
     say "OpenRouter key saved."
   fi
 fi
