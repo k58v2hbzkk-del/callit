@@ -376,9 +376,12 @@ def t_board(args, **_):
 
 @_tool
 def t_referee(args, **_):
-    league = str(args.get("league") or "").strip()
-    if not league:
-        league, _a, _m = _identity()
+    # A chat may only referee its own league. The `league` argument is honoured only when
+    # the session has no gateway chat (the auto-referee cron job / local CLI case).
+    own, _a, _m = _identity()
+    league = own
+    if own == "local":
+        league = str(args.get("league") or "").strip() or own
     news = engine.referee(league, settings=_settings())
     return _ok(announcement="\n\n".join(news), settled=len(news))
 

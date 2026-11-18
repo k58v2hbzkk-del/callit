@@ -118,6 +118,11 @@ Settings (Desktop → Settings → Plugins → callit, or `plugins.entries.calli
 | `min_votes` | `3` | Votes needed to settle a custom call without a judge |
 | `referee_every` | `15m` | Auto-referee interval |
 | `solana_rpc_url` | public mainnet RPC | Used only to verify receipts |
+| `resolver_key` (secret) | none | Referee key that settles duels in the escrow. Without it, duels fall back to the debt ledger |
+
+**Duel escrow referee key (optional):** create a Solana keypair for the referee only, for example `solana-keygen new -o referee.json`, fund it with a little devnet SOL for fees, and paste the contents of `referee.json` (the JSON number array) into the `resolver_key` secret: Desktop → Settings → Plugins → callit, or `hermes setup`. It is stored by Hermes as `CALLIT_RESOLVER_KEY`. Never use a wallet that holds real funds.
+
+**Public bots:** Hermes only answers allowlisted users by default. Decide yourself who may talk to your bot (see the Hermes messaging docs), and consider limiting the bot's toolsets to `callit` (`hermes config set platform_toolsets.telegram '["callit"]'`) so people in the chat can't reach the shell, files or web.
 
 ## Disclosures
 
@@ -126,8 +131,8 @@ Settings (Desktop → Settings → Plugins → callit, or `plugins.entries.calli
   - `site.api.espn.com`: football fixtures and scores for match calls
   - the configured Solana RPC: to verify `/callit paid` receipts, and to read duel escrow accounts
 - **On-chain escrow (on by default, devnet):** CALLIT ships with the program id of its duel escrow on Solana **devnet** (test coins, no real value). When both players stake, the stakes sit in that program, not with CALLIT or the bot. The program is immutable (deployed with `--final`) and can only pay one of the two players, or refund both if no result is ever signed. Hermes signs the result with a per-install referee key kept as the Hermes secret `CALLIT_RESOLVER_KEY`, read only through Hermes's secret scope. That key holds only fee SOL and is never a player's key. Set `escrow_program` to empty to turn on-chain stakes off. **Unaudited: devnet/testing use only.**
-- **Repository extras (not loaded by the plugin):** `escrow/` is the Rust source of the escrow program. `escrow/devnet/*.json` are throwaway **devnet** keypairs used only by this repo's GitHub Actions to deploy and fund testers; after the `--final` deploy they cannot change the program or touch stakes, and must never be used on mainnet. `go`, `status-loop` and `.devcontainer/` are the author's Codespace setup for the demo bot (`go` installs Hermes, pulls this repo and restarts the bot; `status-loop` pushes masked bot logs to this repo's `bot-status` branch). Hermes never runs them; they only run if you start them yourself.
-- **Chat safety:** `go` limits the AI in Telegram and Discord to CALLIT's own tools (no shell, files or web), so strangers messaging a public bot can't reach the server.
+- **Repository extras (not loaded by the plugin):** `escrow/` is the Rust source of the escrow program. `escrow/devnet/*.json` are throwaway **devnet** keypairs used only by this repo's GitHub Actions to deploy and fund testers; after the `--final` deploy they cannot change the program or touch stakes, and must never be used on mainnet.
+- **Stake page:** the "lock your stake" link opens the page on this repo's `gh-pages` branch (setting `stake_page`), which is outside the pinned code.
 - **Storage:** `<HERMES_HOME>/plugin-data/callit/data.db` holds calls, sides, votes, points, debts, Solana *public* addresses and an audit log. No secrets or private keys are stored there.
 - **Background work:** only when a user runs `/callit referee on`. That creates one visible Hermes cron job through `cronjob_manage`, which `/callit referee off` removes. The plugin itself runs no shell commands, no child processes and no reads outside its plugin data.
 - **No telemetry** from the plugin.

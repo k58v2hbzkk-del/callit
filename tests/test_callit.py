@@ -406,3 +406,17 @@ def test_escrow_rejects_foreign_referee(cl):
     ch.bets[bid] = {"status": "open", "creator": "W1", "opponent": "1" * 32, "resolver": "EvilRef"}
     out = "\n".join(eng.referee("tg:g1", settings=S, now=T0 + timedelta(minutes=1)))
     assert "different referee" in out and ch.paid == []
+
+
+def test_referee_only_settles_own_league(cl, monkeypatch):
+    plugin = importlib.import_module(PKG)
+    seen = []
+    monkeypatch.setattr(plugin.engine, "referee", lambda league, settings=None: seen.append(league) or [])
+    monkeypatch.setattr(plugin, "_settings", lambda: None)
+    # inside a gateway chat, a model-supplied league is ignored
+    monkeypatch.setattr(plugin, "_identity", lambda *a, **k: ("telegram:-100", A("Taj"), {}))
+    plugin.t_referee({"league": "telegram:-999"})
+    # with no gateway chat (cron / local), the league argument is honoured
+    monkeypatch.setattr(plugin, "_identity", lambda *a, **k: ("local", A("You"), {}))
+    plugin.t_referee({"league": "telegram:-999"})
+    assert seen == ["telegram:-100", "telegram:-999"]
