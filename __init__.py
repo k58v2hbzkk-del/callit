@@ -9,7 +9,6 @@ Surfaces used (all public plugin APIs):
 
 from __future__ import annotations
 
-import os
 
 import json
 import re
@@ -99,12 +98,13 @@ def _cfg(key: str, default: Any) -> Any:
 
 
 def _secret(name: str) -> str:
+    # Secrets come only through Hermes (catalog rule 11): no bare os.environ read,
+    # so the active profile's key is used under multiplexing.
     try:
         from agent.secret_scope import get_secret
-        val = get_secret(name) or ""
+        return get_secret(name) or ""
     except Exception:
-        val = ""
-    return val or os.environ.get(name, "")
+        return ""
 
 
 _ESCROW: dict = {}
